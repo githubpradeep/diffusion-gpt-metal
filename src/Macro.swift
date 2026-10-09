@@ -24,7 +24,7 @@ struct MacroConfig {
     var kvDim: Int { kvHeads * headDim }
 
     func validate() {
-        precondition(vocab == MacroVocab.tokens.count, "vocab must be the MacroStories word list")
+        precondition(vocab > 4, "vocab is too small")
         precondition(batch > 0 && block > 1 && loops > 0)
         precondition(heads > 0 && kvHeads == 1, "this build repeats a single KV head")
         precondition(embd % heads == 0)
@@ -584,14 +584,18 @@ func macroLearningRate(step: Int, total: Int, base: Float) -> Float {
     return base * 0.5 * (1 + Darwin.cos(Float.pi * progress))
 }
 
-func trainMacro(gpu: GPU, args: Args) throws {
+func trainMacro(gpu: GPU, args: Args, words: WordList? = nil,
+                dataDefault: String = "data/macro-distill.bin",
+                ckptDefault: String = "build/macro.ckpt",
+                title: String = "MacroStories",
+                blockDefault: Int = 384) throws {
     let bits = args.int("bits", 32)
     if bits != 32 {
-        fputs("MacroStories trains in fp32. The published model is 81 KB of fp32 weights.\n", stderr)
+        fputs("\(title) trains in fp32.\n", stderr)
         exit(1)
     }
     let batch = args.int("batch", 32)
-    let block = args.int("block", 384)
+    let block = args.int("block", blockDefault)
     let loops = args.int("loops", 4)
     let steps = args.int("steps", 4000)
     let lr = args.float("lr", 0.003)
@@ -599,15 +603,18 @@ func trainMacro(gpu: GPU, args: Args) throws {
     let clip = args.float("clip", 0)
     let seed = UInt64(args.int("seed", 456))
     let dataSeed = UInt64(args.int("data-seed", 42))
-    let ckptPath = args.str("ckpt", "build/macro.ckpt")
-    let dataPath = args.str("data", "data/macro-distill.bin")
+    let ckptPath = args.str("ckpt", ckptDefault)
+    let dataPath = args.str("data", dataDefault)
     let temp = args.float("temp", 0.5)
     let topP = args.float("top-p", 0.9)
-    let cfg = MacroConfig(block: block, batch: batch, loops: loops)
+    var cfg = MacroConfig(block: block, batch: batch, loops: loops)
+    if let words {
+        cfg.vocab = words.tokens.count
+    }
     cfg.validate()
     let model = Macro(gpu: gpu, cfg: cfg, seed: seed)
     print("device \(gpu.device.name)")
-    print("MacroStories  params \(model.parameterCount)  vocab \(cfg.vocab)  embd \(cfg.embd)  ffn \(cfg.intermediate)")
+    print("\(title)  params \(model.parameterCount)  vocab \(cfg.vocab)  embd \(cfg.embd)  ffn \(cfg.intermediate)")
     print("loops \(cfg.loops)  heads \(cfg.heads)/\(cfg.kvHeads)  block \(block)  batch \(batch)  steps \(steps)")
     print(String(format: "lr %.4f  cosine warmup 5%%  muon on decoder matrices  adamw on the rest  seed %llu", lr, seed))
     print(String(format: "uniform-guess loss %.3f", log(Float(cfg.vocab))))
@@ -617,7 +624,8 @@ func trainMacro(gpu: GPU, args: Args) throws {
     var rng = RNG(dataSeed)
     var valRNG = RNG(dataSeed &+ 999)
     let preview = corpus.train[0]
-    print("sample training story (\(preview.count) tokens):\n\(MacroVocab.decode(preview))\n")
+    let previewText = words?.decode(preview) ?? MacroVocab.decode(preview)
+    print("sample training story (\(preview.count) tokens):\n\(previewText)\n")
     let t0 = CFAbsoluteTimeGetCurrent()
     for step in 1...steps {
         let sched = macroLearningRate(step: step, total: steps, base: lr)
@@ -641,7 +649,7 @@ func trainMacro(gpu: GPU, args: Args) throws {
         }
         if step % 500 == 0 || step == steps {
             var sampleRNG = RNG(seed &+ UInt64(step))
-            let text = generateMacro(model: model, tokens: 640, temp: temp, topP: topP, rng: &sampleRNG)
+            let text = generateMacro(model: model, tokens: 640, temp: temp, topP: topP, rng: &sampleRNG, words: words)
             print("---\n\(text)\n---")
             fflush(stdout)
         }
@@ -655,18 +663,23 @@ func trainMacro(gpu: GPU, args: Args) throws {
     print("wrote \(ckptPath)")
 }
 
-func generateMacro(model: Macro, tokens: Int, temp: Float, topP: Float, rng: inout RNG, prompt: [UInt32] = []) -> String {
-    var ids: [UInt32] = prompt.isEmpty ? [MacroVocab.bos] : prompt
-    if ids.last == MacroVocab.eos { return MacroVocab.decode(ids) }
-    let ban: Set<Int> = [Int(MacroVocab.pad), Int(MacroVocab.unk), Int(MacroVocab.bos)]
+func generateMacro(model: Macro, tokens: Int, temp: Float, topP: Float, rng: inout RNG,
+                    prompt: [UInt32] = [], words: WordList? = nil) -> String {
+    let bos = words?.bos ?? MacroVocab.bos
+    let eos = words?.eos ?? MacroVocab.eos
+    let pad = words?.pad ?? MacroVocab.pad
+    let unk = words?.unk ?? MacroVocab.unk
+    var ids: [UInt32] = prompt.isEmpty ? [bos] : prompt
+    if ids.last == eos { return words?.decode(ids) ?? MacroVocab.decode(ids) }
+    let ban: Set<Int> = [Int(pad), Int(unk), Int(bos)]
     for _ in 0..<tokens {
         let window = Array(ids.suffix(model.cfg.block))
         let logits = model.nextLogits(window)
         let next = sampleNucleus(logits, temp: temp, topP: topP, rng: &rng, ban: ban)
         ids.append(next)
-        if next == MacroVocab.eos { break }
+        if next == eos { break }
     }
-    return MacroVocab.decode(ids)
+    return words?.decode(ids) ?? MacroVocab.decode(ids)
 }
 
 func sampleNucleus(_ logits: [Float], temp: Float, topP: Float, rng: inout RNG, ban: Set<Int>) -> UInt32 {
