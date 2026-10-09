@@ -1,0 +1,6 @@
+build/
+data/
+third_party/
+.venv/
+*.ckpt
+.DS_Store
