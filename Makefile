@@ -1,7 +1,7 @@
 SDK := $(shell xcrun --sdk macosx --show-sdk-path)
 SRC := $(wildcard src/*.swift)
 
-.PHONY: all check overfit train stories stories-check clean
+.PHONY: all check overfit train stories stories-check stories-hi clean
 
 all: build/gpt
 
@@ -24,6 +24,9 @@ stories-check: build/gpt
 
 stories: build/gpt
 	./build/gpt stories
+
+stories-hi: build/gpt
+	./build/gpt stories-hi
 
 clean:
 	rm -rf build

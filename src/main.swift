@@ -57,6 +57,41 @@ case "stories":
         fputs("stories failed: \(error)\n", stderr)
         exit(1)
     }
+case "stories-hi":
+    let gpu = GPU()
+    do {
+        let words = try WordList.load(args.str("vocab", "vocab/hindi.txt"))
+        try trainMacro(gpu: gpu, args: args, words: words,
+                       dataDefault: "data/hindi-stories.bin",
+                       ckptDefault: "build/hindi.ckpt",
+                       title: "Hindi stories",
+                       blockDefault: 256)
+    } catch {
+        fputs("stories-hi failed: \(error)\n", stderr)
+        exit(1)
+    }
+case "stories-hi-sample":
+    let gpu = GPU()
+    let ckpt = args.str("ckpt", "build/hindi.ckpt")
+    do {
+        let words = try WordList.load(args.str("vocab", "vocab/hindi.txt"))
+        let model = try Macro.load(gpu: gpu, url: URL(fileURLWithPath: ckpt), batch: 1, seed: 1)
+        let seed = args.flags["seed"].flatMap(UInt64.init) ?? macroSampleSeed()
+        var rng = RNG(seed)
+        let encoded = words.encode(args.str("prompt", ""))
+        if !encoded.unknown.isEmpty {
+            fputs("prompt has words outside the Hindi list: \(encoded.unknown.joined(separator: ", "))\n", stderr)
+            exit(1)
+        }
+        fputs("seed \(seed)\n", stderr)
+        let text = generateMacro(model: model, tokens: args.int("tokens", 320),
+                                 temp: args.float("temp", 0.7), topP: args.float("top-p", 0.9),
+                                 rng: &rng, prompt: encoded.ids, words: words)
+        print(text)
+    } catch {
+        fputs("stories-hi-sample failed: \(error)\n", stderr)
+        exit(1)
+    }
 case "stories-sample":
     let gpu = GPU()
     let ckpt = args.str("ckpt", "build/macro.ckpt")

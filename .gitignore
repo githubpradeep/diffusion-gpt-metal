@@ -2,5 +2,6 @@ build/
 data/
 third_party/
 .venv/
+.env
 *.ckpt
 .DS_Store

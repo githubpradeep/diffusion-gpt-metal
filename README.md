@@ -1,6 +1,6 @@
 # transformer-metal
 
-A decoder-only GPT trained from scratch on Tiny Shakespeare. The math lives in Metal compute kernels, in the same spirit as nanoGPT and llm.c, and it runs on a Mac GPU.
+A decoder-only GPT trained from scratch on a Mac GPU. The math lives in Metal compute kernels, in the same spirit as nanoGPT and llm.c. One run learns Tiny Shakespeare. The other is a 19,969-parameter story model.
 
 Forward GEMMs use **int8** (default) or **int4** weights. Master weights, activations, gradients, and Adam moments stay in fp32. After each optimizer step the master copy is quantized again. Backward uses the straight-through estimator: the rounding and the per-group scale are a stop-gradient, and `dW` is the ordinary outer product. That is what actually converges. A pure 4-bit optimizer does not.
 
@@ -49,9 +49,28 @@ make stories
 
 Each run picks a new seed. Pass `--seed N` to repeat that sample. `--prompt` continues that opening; the words have to be in the 378-word list. Sampling defaults match the published model: temperature 0.5 and top-p 0.9.
 
+The block diagram, the parameter table, the corpus format, and sample outputs are in [docs/architecture.md](docs/architecture.md).
+
+## Hindi stories
+
+The same Metal block trains on Hindi. The 120 stories in `data/hindi-by-hand/` were written directly, then packed into `vocab/hindi.txt` and `data/hindi-stories.bin`. The checkpoint is `build/hindi.ckpt`, separate from the English run.
+
+```bash
+make stories-hi
+./build/gpt stories-hi-sample --ckpt build/hindi.ckpt --seed 7
+./build/gpt stories-hi-sample --ckpt build/hindi.ckpt --prompt "एक दिन मीना" --seed 17
+```
+
 ## Layout
 
-- `metal/kernels.metal` — quantize, grouped int4/int8 GEMM, LayerNorm, GELU, causal attention, embeddings, loss, AdamW
-- `src/GPT.swift` — the block, the backward pass, checkpoints
+- `metal/kernels.metal` — quantize, grouped int4/int8 GEMM, LayerNorm, RMSNorm, RoPE, GELU, SwiGLU, causal attention, embeddings, loss, AdamW
+- `src/GPT.swift` — the Shakespeare block, the backward pass, checkpoints
+- `src/Macro.swift` — the 19,969-parameter story model, Muon, training, sampling
+- `src/MacroData.swift` — the teacher-story corpus used by `make stories`
+- `src/MacroVocab.swift` — the 378-word list and prompt encoding
+- `scripts/distill_stories.py` — sample `raincandy-u/MacroStories` into `data/macro-distill.bin`
+- `data/hindi-by-hand/` — the 120 handwritten Hindi stories
+- `vocab/hindi.txt` — the Hindi word list
+- `src/WordList.swift` — loads that list at train and sample time
 - `src/Train.swift` — Tiny Shakespeare, the training loop, sampling
 - `src/Check.swift` — CPU references and finite-difference checks
