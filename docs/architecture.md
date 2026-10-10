@@ -2,18 +2,18 @@
 
 `transformer-metal` is a from-scratch decoder-only trainer. Swift owns the weights, the training loop, and sampling. The arithmetic runs as Metal compute kernels on the Mac GPU. Kernels in `metal/kernels.metal` are compiled at process start with Metal's runtime compiler.
 
-Two models share that runtime.
+Three models share that runtime. The story model and the tool model are the same looped block at two widths.
 
-| | Shakespeare | MacroStories |
-|---|---|---|
-| Data | character-level Tiny Shakespeare | 8,192 stories sampled from [raincandy-u/MacroStories](https://huggingface.co/raincandy-u/MacroStories) |
-| Default size | 4 layers, 4 heads, width 128, about 810k parameters | 19,969 parameters |
-| Context | 64 | 384 |
-| Precision | int8 GEMM by default, or int4 / fp32 | fp32 only |
-| Position | learned absolute | RoPE, theta 10,000 |
-| Block | pre-norm LayerNorm, tanh-GELU, full attention | one shared block, applied 4 times |
-| Optimizer | AdamW on every parameter | Muon on decoder matrices, AdamW on embeddings and RMSNorms |
-| Checkpoint | `TGMT`, `build/model.ckpt` | `TMAC`, `build/macro.ckpt` |
+| | Shakespeare | MacroStories | Tool calls |
+|---|---|---|---|
+| Data | character-level Tiny Shakespeare | 8,192 stories sampled from [raincandy-u/MacroStories](https://huggingface.co/raincandy-u/MacroStories) | 4,135 requests, labels fixed before the sentence is written |
+| Default size | 4 layers, 4 heads, width 128, about 810k parameters | 19,969 parameters | 1,000,193 parameters |
+| Context | 64 | 384 | 64 |
+| Precision | int8 GEMM by default, or int4 / fp32 | fp32 only | fp32 only |
+| Position | learned absolute | RoPE, theta 10,000 | RoPE, theta 10,000 |
+| Block | pre-norm LayerNorm, tanh-GELU, full attention | one shared block, applied 4 times | the same shared block, applied 4 times |
+| Optimizer | AdamW on every parameter | Muon on decoder matrices, AdamW on embeddings and RMSNorms | the same split |
+| Checkpoint | `TGMT`, `build/model.ckpt` | `TMAC`, `build/macro.ckpt` | `TMAC`, `build/tools.ckpt` |
 
 ## Where each step runs
 
@@ -147,6 +147,32 @@ make train
 ./build/gpt overfit --bits 4
 ```
 
+## Tool calls
+
+The controller uses the story block with a wider shared layer: embedding width 256, SwiGLU width 758, 4 query heads, 1 key/value head, head dimension 64, and 4 passes. The word list has 987 entries, including `<request>`, `<call>`, and `<refuse>`. The count is
+
+```text
+987 × 256 + 165,377 + 3 × 758 × 256 = 1,000,193
+```
+
+The first term is the tied word table. 165,377 is attention, the five RMSNorms, and the unused exit gate at this width. The last term is the SwiGLU matrices. Pad, start, end, and unknown stay ids 0 through 3. Loss still ignores pad. The exit gate is still allocated and still unused.
+
+Training is the story recipe: 4,000 steps, batch 32, learning rate 0.003, cosine decay with 5% warmup, Muon on the matrices, AdamW on the embeddings and norms. The block is 64 because the longest request is 33 tokens. At width 256 the Newton–Schulz step is the slow part. On an M1 Pro the run is about 750–860 tokens/s, so 4,000 steps take about three hours. Final training loss was 0.577 and held-out loss was 1.268, against a uniform-guess loss of 6.895. The split is 3,928 training requests and 207 held-out ones, every 20th row of `data/tools/calls.bin`.
+
+Each row is one sentence and one action. The ten tools are `set_timer`, `set_alarm`, `add_reminder`, `send_message`, `create_event`, `get_weather`, `play_music`, `navigate`, `add_note`, and `open_app`. `scripts/distill_tools.py` chooses the tool and the argument values first, then asks a teacher to write a sentence that contains those values. A row is kept only when every value appears in the sentence. A refusal has no tool. The packed file uses the same `MDST` layout as the stories. `vocab/tools.txt` is the word list. The corpus directory `data/tools/` is gitignored; the trained weights are `build/tools.ckpt`.
+
+Greedy generation from the request prefix matches the gold call, including the end token, on 200 of the 207 held-out rows. The misses are short fragments. The model writes one more word of the request, such as turning `tea 25 minutes` into `tea 25 minutes timer`, instead of emitting `<call>`. A colon is split into its own token, so a time is stored and generated as `6: 45`.
+
+```bash
+make tools
+./build/gpt tools-eval --ckpt build/tools.ckpt
+./build/gpt tools-sample --ckpt build/tools.ckpt --prompt "Could you set a timer for 10 minutes for pasta" --temp 0
+./build/gpt tools-sample --ckpt build/tools.ckpt --prompt "what is 17 times 4" --temp 0
+make demo
+```
+
+`tools-sample` prints the decoded continuation. A call looks like `<call> set_timer minutes 10 label pasta`. A refusal is `<refuse>`. `make demo` loads the checkpoint once and serves the controller page at http://127.0.0.1:8787. `demo/controller.mp4` records that page for 24 seconds.
+
 ## Checkpoints
 
-A Shakespeare checkpoint starts with the bytes `TGMT`, then the vocabulary bytes and every master weight in creation order. A story checkpoint starts with `TMAC`, version 1, then vocab size, block, loops, heads, key/value heads, embedding width, SwiGLU width, the value-mix coefficient, and the parameters in creation order: embedding, Q, K, V, output, gate, up, down, the five norms, and the unused exit gate. Both files store fp32 master weights. The int4 or int8 copy is rebuilt when a Shakespeare checkpoint is loaded.
+A Shakespeare checkpoint starts with the bytes `TGMT`, then the vocabulary bytes and every master weight in creation order. A looped checkpoint, used by both the story model and the tool model, starts with `TMAC`, version 1, then vocab size, block, loops, heads, key/value heads, embedding width, SwiGLU width, the value-mix coefficient, and the parameters in creation order: embedding, Q, K, V, output, gate, up, down, the five norms, and the unused exit gate. The files store fp32 master weights. The int4 or int8 copy is rebuilt when a Shakespeare checkpoint is loaded. The string table is not inside `TMAC`; the tool run reads `vocab/tools.txt` beside `build/tools.ckpt`.

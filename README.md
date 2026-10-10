@@ -1,6 +1,6 @@
 # transformer-metal
 
-A decoder-only GPT trained from scratch on a Mac GPU. The math lives in Metal compute kernels, in the same spirit as nanoGPT and llm.c. One run learns Tiny Shakespeare. The other is a 19,969-parameter story model.
+A decoder-only GPT trained from scratch on a Mac GPU. The math lives in Metal compute kernels, in the same spirit as nanoGPT and llm.c. One run learns Tiny Shakespeare. Another is a 19,969-parameter story model. A third is a 1,000,193-parameter looped controller for ten offline actions.
 
 Forward GEMMs use **int8** (default) or **int4** weights. Master weights, activations, gradients, and Adam moments stay in fp32. After each optimizer step the master copy is quantized again. Backward uses the straight-through estimator: the rounding and the per-group scale are a stop-gradient, and `dW` is the ordinary outer product. That is what actually converges. A pure 4-bit optimizer does not.
 
@@ -61,11 +61,29 @@ make stories-hi
 ./build/gpt stories-hi-sample --ckpt build/hindi.ckpt --prompt "एक दिन मीना" --seed 17
 ```
 
+## Tool calls
+
+`make tools` trains the same looped block at a wider size: hidden size 256, SwiGLU width 758, 4 query heads, 1 key/value head, 4 passes, 987 words, **1,000,193** parameters. The checkpoint is `build/tools.ckpt`. It is one call per sentence. The arguments are copied out of the sentence. If the sentence is not one of the ten actions, the model emits `<refuse>`.
+
+The ten actions are timer, alarm, reminder, message, calendar event, weather, music, directions, note, and opening an app. `scripts/distill_tools.py` fixes each label before a teacher writes the sentence, and drops any sentence that does not contain the argument values. The packed corpus is `data/tools/calls.bin` (gitignored) with the word list in `vocab/tools.txt`. After 4,000 steps the training loss was 0.577 and the held-out loss was 1.268. Greedy decode matches the gold call on **200 of 207** held-out requests. Short fragments sometimes keep writing the sentence instead of starting the call.
+
+```bash
+make tools
+./build/gpt tools-eval --ckpt build/tools.ckpt
+./build/gpt tools-sample --ckpt build/tools.ckpt --prompt "Could you set a timer for 10 minutes for pasta" --temp 0
+make demo
+```
+
+`make demo` serves http://127.0.0.1:8787 and keeps the checkpoint loaded. `demo/controller.mp4` is a 24-second recording of that page. Words outside `vocab/tools.txt` are rejected before the model runs. A colon is its own token, so a time comes back as `6: 45`.
+
 ## Layout
 
 - `metal/kernels.metal` — quantize, grouped int4/int8 GEMM, LayerNorm, RMSNorm, RoPE, GELU, SwiGLU, causal attention, embeddings, loss, AdamW
 - `src/GPT.swift` — the Shakespeare block, the backward pass, checkpoints
-- `src/Macro.swift` — the 19,969-parameter story model, Muon, training, sampling
+- `src/Macro.swift` — the looped block, Muon, training, sampling, tool-call eval
+- `scripts/distill_tools.py` — fixed tool labels, then a teacher writes the sentence
+- `vocab/tools.txt` — the 987-word tool list
+- `demo/` — the controller page, `controller.mp4`, and the server that keeps `build/tools.ckpt` loaded
 - `src/MacroData.swift` — the teacher-story corpus used by `make stories`
 - `src/MacroVocab.swift` — the 378-word list and prompt encoding
 - `scripts/distill_stories.py` — sample `raincandy-u/MacroStories` into `data/macro-distill.bin`
