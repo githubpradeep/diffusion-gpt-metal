@@ -1,5 +1,50 @@
 import Foundation
 
+func emitToolLine(_ object: [String: Any]) {
+    guard JSONSerialization.isValidJSONObject(object),
+          let data = try? JSONSerialization.data(withJSONObject: object) else {
+        return
+    }
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write(Data("\n".utf8))
+}
+
+/// One prompt per line on stdin, one JSON line on stdout. The model stays loaded.
+func runToolRepl(gpu: GPU, args: Args) throws {
+    let words = try WordList.load(args.str("vocab", "vocab/tools.txt"))
+    let ckpt = args.str("ckpt", "build/tools.ckpt")
+    let model = try Macro.load(gpu: gpu, url: URL(fileURLWithPath: ckpt), batch: 1, seed: 1)
+    let seed = args.flags["seed"].flatMap(UInt64.init) ?? 1
+    var rng = RNG(seed)
+    let tokens = args.int("tokens", 48)
+    let temp = args.float("temp", 0)
+    let topP = args.float("top-p", 1)
+    while let line = readLine(strippingNewline: true) {
+        let prompt = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        if prompt.isEmpty { continue }
+        let encoded = words.encode(prompt)
+        if !encoded.unknown.isEmpty {
+            emitToolLine(["error": "unknown", "unknown": encoded.unknown])
+            continue
+        }
+        let text = generateMacro(model: model, tokens: tokens, temp: temp, topP: topP,
+                                 rng: &rng, prompt: encoded.ids, words: words)
+        emitToolLine(["text": text])
+    }
+}
+
+func reportToolEval(gpu: GPU, args: Args, words: WordList) throws {
+    let ckpt = args.str("ckpt", "build/tools.ckpt")
+    let dataPath = args.str("data", "data/tools/calls.bin")
+    let model = try Macro.load(gpu: gpu, url: URL(fileURLWithPath: ckpt), batch: 1, seed: 1)
+    let corpus = loadMacroCorpus(dataPath)
+    let result = evalToolCalls(model: model, stories: corpus.val, words: words)
+    print("held-out exact \(result.hit)/\(result.n)")
+    for miss in result.misses {
+        print("---\n\(miss)")
+    }
+}
+
 func macroSampleSeed() -> UInt64 {
     let ticks = UInt64(Date().timeIntervalSince1970 * 1_000_000)
     return ticks == 0 ? 1 : ticks
@@ -90,6 +135,64 @@ case "stories-hi-sample":
         print(text)
     } catch {
         fputs("stories-hi-sample failed: \(error)\n", stderr)
+        exit(1)
+    }
+case "tools":
+    let gpu = GPU()
+    do {
+        let words = try WordList.load(args.str("vocab", "vocab/tools.txt"))
+        try trainMacro(gpu: gpu, args: args, words: words,
+                       dataDefault: "data/tools/calls.bin",
+                       ckptDefault: "build/tools.ckpt",
+                       title: "Tool calls",
+                       blockDefault: 64,
+                       embdDefault: 256,
+                       intermediateDefault: 758,
+                       headsDefault: 4,
+                       sampleTokens: 48,
+                       tempDefault: 0)
+        try reportToolEval(gpu: gpu, args: args, words: words)
+    } catch {
+        fputs("tools failed: \(error)\n", stderr)
+        exit(1)
+    }
+case "tools-repl":
+    let gpu = GPU()
+    do {
+        try runToolRepl(gpu: gpu, args: args)
+    } catch {
+        fputs("tools-repl failed: \(error)\n", stderr)
+        exit(1)
+    }
+case "tools-sample":
+    let gpu = GPU()
+    let ckpt = args.str("ckpt", "build/tools.ckpt")
+    do {
+        let words = try WordList.load(args.str("vocab", "vocab/tools.txt"))
+        let model = try Macro.load(gpu: gpu, url: URL(fileURLWithPath: ckpt), batch: 1, seed: 1)
+        let seed = args.flags["seed"].flatMap(UInt64.init) ?? macroSampleSeed()
+        var rng = RNG(seed)
+        let encoded = words.encode(args.str("prompt", ""))
+        if !encoded.unknown.isEmpty {
+            fputs("prompt has words outside the tool list: \(encoded.unknown.joined(separator: ", "))\n", stderr)
+            exit(1)
+        }
+        fputs("seed \(seed)\n", stderr)
+        let text = generateMacro(model: model, tokens: args.int("tokens", 48),
+                                 temp: args.float("temp", 0), topP: args.float("top-p", 1),
+                                 rng: &rng, prompt: encoded.ids, words: words)
+        print(text)
+    } catch {
+        fputs("tools-sample failed: \(error)\n", stderr)
+        exit(1)
+    }
+case "tools-eval":
+    let gpu = GPU()
+    do {
+        let words = try WordList.load(args.str("vocab", "vocab/tools.txt"))
+        try reportToolEval(gpu: gpu, args: args, words: words)
+    } catch {
+        fputs("tools-eval failed: \(error)\n", stderr)
         exit(1)
     }
 case "stories-sample":

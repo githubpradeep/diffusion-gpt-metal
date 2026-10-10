@@ -270,6 +270,10 @@ func printHelp() {
       gpt stories-sample [--ckpt build/macro.ckpt] [--prompt "The bird fell"] [--tokens 640] [--temp 0.5] [--top-p 0.9] [--seed N]
       gpt stories-hi [--steps 4000] [--batch 32] [--block 256] [--data data/hindi-stories.bin] [--vocab vocab/hindi.txt] [--ckpt build/hindi.ckpt]
       gpt stories-hi-sample [--ckpt build/hindi.ckpt] [--vocab vocab/hindi.txt] [--prompt "एक दिन मीना"] [--tokens 320] [--temp 0.7] [--seed N]
+      gpt tools [--steps 4000] [--batch 32] [--block 64] [--embd 256] [--intermediate 758] [--heads 4] [--data data/tools/calls.bin] [--vocab vocab/tools.txt] [--ckpt build/tools.ckpt]
+      gpt tools-sample [--ckpt build/tools.ckpt] [--vocab vocab/tools.txt] [--prompt "set a 5 minute timer for tea"] [--tokens 48] [--temp 0]
+      gpt tools-repl [--ckpt build/tools.ckpt] [--vocab vocab/tools.txt] [--temp 0]
+      gpt tools-eval [--ckpt build/tools.ckpt] [--data data/tools/calls.bin] [--vocab vocab/tools.txt]
 
     --bits 4, 8, or 32. 8-bit is the default. 32 keeps every GEMM in fp32.
     Weights are group-quantized (group 8) only for the forward GEMM. Gradients

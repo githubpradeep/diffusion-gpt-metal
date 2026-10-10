@@ -588,7 +588,12 @@ func trainMacro(gpu: GPU, args: Args, words: WordList? = nil,
                 dataDefault: String = "data/macro-distill.bin",
                 ckptDefault: String = "build/macro.ckpt",
                 title: String = "MacroStories",
-                blockDefault: Int = 384) throws {
+                blockDefault: Int = 384,
+                embdDefault: Int = 32,
+                intermediateDefault: Int = 48,
+                headsDefault: Int = 2,
+                sampleTokens: Int = 640,
+                tempDefault: Float = 0.5) throws {
     let bits = args.int("bits", 32)
     if bits != 32 {
         fputs("\(title) trains in fp32.\n", stderr)
@@ -605,9 +610,13 @@ func trainMacro(gpu: GPU, args: Args, words: WordList? = nil,
     let dataSeed = UInt64(args.int("data-seed", 42))
     let ckptPath = args.str("ckpt", ckptDefault)
     let dataPath = args.str("data", dataDefault)
-    let temp = args.float("temp", 0.5)
+    let temp = args.float("temp", tempDefault)
     let topP = args.float("top-p", 0.9)
+    let shown = args.int("sample-tokens", sampleTokens)
     var cfg = MacroConfig(block: block, batch: batch, loops: loops)
+    cfg.embd = args.int("embd", embdDefault)
+    cfg.intermediate = args.int("intermediate", intermediateDefault)
+    cfg.heads = args.int("heads", headsDefault)
     if let words {
         cfg.vocab = words.tokens.count
     }
@@ -649,7 +658,7 @@ func trainMacro(gpu: GPU, args: Args, words: WordList? = nil,
         }
         if step % 500 == 0 || step == steps {
             var sampleRNG = RNG(seed &+ UInt64(step))
-            let text = generateMacro(model: model, tokens: 640, temp: temp, topP: topP, rng: &sampleRNG, words: words)
+            let text = generateMacro(model: model, tokens: shown, temp: temp, topP: topP, rng: &sampleRNG, words: words)
             print("---\n\(text)\n---")
             fflush(stdout)
         }
@@ -680,6 +689,42 @@ func generateMacro(model: Macro, tokens: Int, temp: Float, topP: Float, rng: ino
         if next == eos { break }
     }
     return words?.decode(ids) ?? MacroVocab.decode(ids)
+}
+
+/// Greedy continuation from each held-out request. A hit is an exact token match
+/// of the call, including the end token.
+func evalToolCalls(model: Macro, stories: [[UInt32]], words: WordList) -> (hit: Int, n: Int, misses: [String]) {
+    guard let call = words.stoi["<call>"], let refuse = words.stoi["<refuse>"] else {
+        fputs("tool vocab is missing <call> or <refuse>\n", stderr)
+        exit(1)
+    }
+    let ban: Set<Int> = [Int(words.pad), Int(words.unk), Int(words.bos)]
+    var rng = RNG(1)
+    var hit = 0
+    var misses: [String] = []
+    for story in stories {
+        guard let cut = story.firstIndex(where: { $0 == call || $0 == refuse }) else { continue }
+        let gold = Array(story[cut...])
+        var ids = Array(story[..<cut])
+        var matched = true
+        for expected in gold {
+            let window = Array(ids.suffix(model.cfg.block))
+            let next = sampleNucleus(model.nextLogits(window), temp: 0, topP: 1, rng: &rng, ban: ban)
+            ids.append(next)
+            if next != expected {
+                matched = false
+                break
+            }
+        }
+        if matched {
+            hit += 1
+        } else if misses.count < 5 {
+            let got = words.decode(ids)
+            let want = words.decode(story)
+            misses.append("got: \(got)\nwant: \(want)")
+        }
+    }
+    return (hit, stories.count, misses)
 }
 
 func sampleNucleus(_ logits: [Float], temp: Float, topP: Float, rng: inout RNG, ban: Set<Int>) -> UInt32 {
