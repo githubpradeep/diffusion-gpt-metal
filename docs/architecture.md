@@ -1,8 +1,12 @@
 # Architecture
 
-`transformer-metal` is a from-scratch decoder-only trainer. Swift owns the weights, the training loop, and sampling. The arithmetic runs as Metal compute kernels on the Mac GPU. Kernels in `metal/kernels.metal` are compiled at process start with Metal's runtime compiler.
+`diffusion-gpt-metal` trains two image models on one looped transformer. Swift owns the weights, the training loop, and sampling. The arithmetic runs as Metal compute kernels on the Mac GPU. Kernels in `metal/kernels.metal` are compiled at process start with Metal's runtime compiler.
 
-Three text models share that runtime. The story model and the tool model are the same looped block at two widths. The drawing runs are that block again: a causal painter and a diffusion transformer.
+The painter is causal next-token prediction over patch ids. The diffusion model is the same block with the causal mask off, conditioned on a name and a timestep, and it predicts the clean patch. Both runs are under [Drawings](#drawings).
+
+The loop was first trained as text. The story model and the tool model are that block at two widths. Shakespeare is a separate quantized GPT used to test the kernels.
+
+## Text models
 
 | | Shakespeare | MacroStories | Tool calls |
 |---|---|---|---|

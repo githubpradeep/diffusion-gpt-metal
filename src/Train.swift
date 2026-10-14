@@ -259,7 +259,7 @@ struct Args {
 
 func printHelp() {
     print("""
-    transformer-metal — GPT from scratch on Tiny Shakespeare, Metal int4/int8 kernels
+    diffusion-gpt-metal — a looped transformer that draws, autoregressive patches and diffusion
 
     usage:
       gpt check
