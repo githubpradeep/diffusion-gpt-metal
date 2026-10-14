@@ -112,6 +112,7 @@ final class GPU {
         "rope_fwd", "rope_bwd", "swiglu_fwd", "swiglu_bwd",
         "mix_f", "copy_f", "acc_scale_f", "repeat_heads", "sum_heads",
         "gemm_dw_acc", "loss_fwd_masked",
+        "mse_fwd", "add_cond", "sum_cond",
     ]
 
     init() {
@@ -298,8 +299,9 @@ final class GPU {
         go("gelu_bwd", [x.raw, dy.raw, dx.raw], unary(n), grid: grid1(n), tpg: tpg1)
     }
 
-    func attnFwd(q: Buf, k: Buf, v: Buf, scores: Buf, probs: Buf, av: Buf, B: Int, T: Int, H: Int, D: Int) {
-        let p = attnP(B, T, H, D)
+    func attnFwd(q: Buf, k: Buf, v: Buf, scores: Buf, probs: Buf, av: Buf, B: Int, T: Int, H: Int, D: Int,
+                 causal: Bool = true) {
+        let p = attnP(B, T, H, D, causal: causal)
         let tt = B * H * T * T
         let n = B * T * H * D
         go("attn_scores", [q.raw, k.raw, scores.raw], p, grid: grid1(tt), tpg: tpg1)
@@ -457,6 +459,8 @@ final class GPU {
         precondition(MemoryLayout<ScaleP>.size == 16)
         precondition(MemoryLayout<BiasP>.size == 16)
         precondition(MemoryLayout<AttnP>.size == 32)
+        precondition(MemoryLayout<MseP>.size == 16 && MemoryLayout<MseP>.stride == 16)
+        precondition(MemoryLayout<CondP>.size == 16 && MemoryLayout<CondP>.stride == 16)
         precondition(MemoryLayout<EmbP>.size == 16)
         precondition(MemoryLayout<EmbBwdP>.size == 16)
         precondition(MemoryLayout<PosP>.size == 16)
@@ -473,9 +477,25 @@ final class GPU {
               qGroup: UInt32(qGroup), pad0: 0, pad1: 0, pad2: 0)
     }
 
-    private func attnP(_ B: Int, _ T: Int, _ H: Int, _ D: Int) -> AttnP {
+    private func attnP(_ B: Int, _ T: Int, _ H: Int, _ D: Int, causal: Bool = true) -> AttnP {
         AttnP(B: UInt32(B), T: UInt32(T), H: UInt32(H), D: UInt32(D),
-              scale: 1 / sqrt(Float(D)), pad0: 0, pad1: 0, pad2: 0)
+              scale: 1 / sqrt(Float(D)), causal: causal ? 1 : 0, pad1: 0, pad2: 0)
+    }
+
+    func mse(pred: Buf, target: Buf, err: Buf, dpred: Buf, n: Int, invCount: Float) {
+        let p = MseP(n: UInt32(n), pad0: 0, invCount: invCount, pad1: 0)
+        go("mse_fwd", [pred.raw, target.raw, err.raw, dpred.raw], p, grid: grid1(n), tpg: tpg1)
+    }
+
+    func addCond(x: Buf, cond: Buf, y: Buf, B: Int, T: Int, C: Int) {
+        let p = CondP(B: UInt32(B), T: UInt32(T), C: UInt32(C), pad: 0)
+        go("add_cond", [x.raw, cond.raw, y.raw], p, grid: grid1(B * T * C), tpg: tpg1)
+    }
+
+    func sumCond(dy: Buf, dcond: Buf, B: Int, T: Int, C: Int) {
+        let p = CondP(B: UInt32(B), T: UInt32(T), C: UInt32(C), pad: 0)
+        go("sum_cond", [dy.raw, dcond.raw], p,
+           grid: MTLSize(width: C, height: B, depth: 1), tpg: tpg2)
     }
 
     private func unary(_ n: Int) -> UnaryP {

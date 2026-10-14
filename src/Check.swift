@@ -37,6 +37,7 @@ func runChecks(_ gpu: GPU) -> Bool {
     checkLayerNorm(gpu, &r)
     checkAttention(gpu, &r)
     checkLoss(gpu, &r)
+    checkMSE(gpu, &r)
     checkAdam(gpu, &r)
     checkEmbed(gpu, &r)
     checkLinearLearns(gpu, bits: 32, &r)
@@ -226,6 +227,13 @@ private func checkAttention(_ gpu: GPU, _ r: inout Report) {
     let avOK = av.download(n).allSatisfy { abs($0 - 1) < 1e-4 }
     r.expect(maskOK && avOK, "causal softmax is uniform over the prefix")
 
+    gpu.begin()
+    gpu.attnFwd(q: qb, k: kb, v: vb, scores: scores, probs: probs, av: av, B: B, T: T, H: H, D: D, causal: false)
+    gpu.end()
+    let full = probs.download(B * H * T * T)
+    let fullOK = full.allSatisfy { abs($0 - 1 / Float(T)) < 1e-4 }
+    r.expect(fullOK, "full attention is uniform over the block")
+
     var rng = RNG(11)
     let qr = randn(n, &rng, 0.4)
     let kr = randn(n, &rng, 0.4)
@@ -269,6 +277,23 @@ private func checkLoss(_ gpu: GPU, _ r: inout Report) {
     let g0 = d.p[0], g1 = d.p[1]
     r.expect(nllOK && abs(g0 + 0.5) < 1e-5 && abs(g1 - 0.5) < 1e-5,
              String(format: "cross entropy log2 grad [%.4f %.4f]", g0, g1))
+}
+
+private func checkMSE(_ gpu: GPU, _ r: inout Report) {
+    let pred = Buf(gpu.device, count: 2)
+    let target = Buf(gpu.device, count: 2)
+    pred.upload([0, 0])
+    target.upload([0, 1])
+    let err = Buf(gpu.device, count: 2)
+    let d = Buf(gpu.device, count: 2)
+    let sum = Buf(gpu.device, count: 1)
+    gpu.begin()
+    gpu.mse(pred: pred, target: target, err: err, dpred: d, n: 2, invCount: 0.5)
+    gpu.reduceSum(err, into: sum, n: 2, slot: 0)
+    gpu.end()
+    let loss = sum.p[0] * 0.5
+    r.expect(abs(loss - 0.5) < 1e-5 && abs(d.p[0]) < 1e-5 && abs(d.p[1] + 1) < 1e-5,
+             String(format: "mse loss %.4f grad [%.4f %.4f]", loss, d.p[0], d.p[1]))
 }
 
 private func checkAdam(_ gpu: GPU, _ r: inout Report) {

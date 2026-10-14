@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Two ways to draw</title>
+<style>
+  :root {
+    --paper: #e6dfd4;
+    --ink: #1b1714;
+    --muted: #6d645c;
+    --line: #c9bfb2;
+    --card: #fffdf8;
+    --accent: #c24b1a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    font-family: "Iowan Old Style", Palatino, "Palatino Linotype", Georgia, serif;
+    color: var(--ink);
+    background:
+      radial-gradient(900px 480px at 15% -10%, #f3ecdf, transparent 60%),
+      var(--paper);
+  }
+  main { max-width: 1080px; margin: 0 auto; padding: 48px 28px 64px; }
+  .kicker {
+    margin: 0 0 12px;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 12px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  h1 {
+    margin: 0;
+    font-weight: 500;
+    font-size: 64px;
+    line-height: 0.95;
+    letter-spacing: -0.03em;
+  }
+  .lede { margin: 18px 0 0; max-width: 46ch; font-size: 20px; line-height: 1.4; }
+  .facts {
+    margin: 22px 0 0;
+    padding: 0;
+    list-style: none;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 14px;
+    color: var(--muted);
+  }
+  .facts li { padding: 6px 0; border-top: 1px solid var(--line); }
+  .more { margin: 16px 0 0; }
+  .more a {
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 14px;
+    color: var(--ink);
+    text-decoration: none;
+    border-bottom: 1px solid var(--line);
+  }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 28px 0 8px; }
+  .chips button {
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 13px;
+    color: var(--ink);
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 6px 10px;
+    cursor: pointer;
+  }
+  .chips button.on { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+  .pair {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 28px;
+    margin-top: 18px;
+  }
+  article {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    padding: 18px;
+  }
+  h2 { margin: 0; font-weight: 500; font-size: 28px; }
+  .status {
+    min-height: 1.4em;
+    margin: 6px 0 12px;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  canvas.stage, canvas.loop {
+    background: #111;
+    border-radius: 8px;
+  }
+  canvas.stage { width: min(100%, 420px); height: auto; aspect-ratio: 1; }
+  .loops { display: flex; gap: 8px; margin-top: 14px; }
+  .loops figure { margin: 0; }
+  .loops figcaption {
+    margin-top: 4px;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  canvas.loop { width: 72px; height: 72px; }
+  @media (max-width: 800px) {
+    main { padding: 28px 16px 40px; }
+    h1 { font-size: 44px; }
+    .pair { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <p class="kicker">Same photograph, two orders</p>
+  <h1>A real picture.</h1>
+  <p class="lede">Pick a name. The left canvas fills the photograph one 16×16 patch at a time. The right one clears it out of noise. Under each, four small frames are what the four passes believed.</p>
+  <ul class="facts">
+    <li id="ar-fact">Autoregressive painter</li>
+    <li id="dit-fact">Diffusion transformer</li>
+    <li>Wikimedia Commons photographs, center-cropped to 128×128.</li>
+  </ul>
+  <p class="more"><a href="/">Back to the controller</a></p>
+  <div class="chips" id="chips"></div>
+  <div class="pair">
+    <article>
+      <h2>In patches</h2>
+      <p class="status" id="ar-status">Pick a name.</p>
+      <canvas class="stage" id="ar-stage" width="128" height="128"></canvas>
+      <div class="loops" id="ar-loops"></div>
+    </article>
+    <article>
+      <h2>From noise</h2>
+      <p class="status" id="dit-status">Pick a name.</p>
+      <canvas class="stage" id="dit-stage" width="128" height="128"></canvas>
+      <div class="loops" id="dit-loops"></div>
+    </article>
+  </div>
+</main>
+<script>
+const timers = { ar: 0, dit: 0 };
+
+function paint(canvas, rgb, side) {
+  const ctx = canvas.getContext("2d");
+  canvas.width = side;
+  canvas.height = side;
+  const img = ctx.createImageData(side, side);
+  const n = Math.min(rgb.length, side * side * 3);
+  for (let i = 0, p = 0; i < n; i += 3, p += 4) {
+    img.data[p] = rgb[i];
+    img.data[p + 1] = rgb[i + 1];
+    img.data[p + 2] = rgb[i + 2];
+    img.data[p + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+function play(key, canvas, frames, side) {
+  clearInterval(timers[key]);
+  if (!frames || !frames.length) return;
+  let i = 0;
+  paint(canvas, frames[0], side);
+  if (frames.length === 1) return;
+  timers[key] = setInterval(() => {
+    i += 1;
+    paint(canvas, frames[i], side);
+    if (i >= frames.length - 1) clearInterval(timers[key]);
+  }, key === "ar" ? 70 : 120);
+}
+
+function showLoops(id, frames, side) {
+  const box = document.getElementById(id);
+  box.replaceChildren();
+  (frames || []).forEach((frame, n) => {
+    const fig = document.createElement("figure");
+    const canvas = document.createElement("canvas");
+    canvas.className = "loop";
+    canvas.width = side;
+    canvas.height = side;
+    paint(canvas, frame, side);
+    const cap = document.createElement("figcaption");
+    cap.textContent = "pass " + (n + 1);
+    fig.append(canvas, cap);
+    box.append(fig);
+  });
+}
+
+async function draw(name) {
+  document.querySelectorAll(".chips button").forEach((b) => b.classList.toggle("on", b.textContent === name));
+  const jobs = [
+    ["ar", "/api/draw-ar", "ar-stage", "ar-loops", "ar-status", "ar-fact", "Painting "],
+    ["dit", "/api/draw-dit", "dit-stage", "dit-loops", "dit-status", "dit-fact", "Clearing "],
+  ];
+  await Promise.all(jobs.map(async ([key, url, stage, loops, status, fact, verb]) => {
+    document.getElementById(status).textContent = verb + name + "…";
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: name }),
+      });
+      const data = await res.json();
+      if (data.error) {
+        document.getElementById(status).textContent = data.message || data.error;
+        return;
+      }
+      const side = data.width || 128;
+      const label = key === "ar" ? "Autoregressive" : "Diffusion";
+      document.getElementById(fact).textContent = label + " · " + data.params.toLocaleString() + " parameters";
+      document.getElementById(status).textContent = name + " · " + data.frames.length + " frames";
+      play(key, document.getElementById(stage), data.frames, side);
+      showLoops(loops, data.loops, side);
+    } catch (err) {
+      document.getElementById(status).textContent = "The model did not answer.";
+    }
+  }));
+}
+
+async function loadNames() {
+  const box = document.getElementById("chips");
+  let names = [];
+  try {
+    const res = await fetch("/api/icons");
+    const data = await res.json();
+    names = data.names || [];
+  } catch (err) {
+    names = [];
+  }
+  if (!names.length) {
+    box.textContent = "No icon list yet. Run make pictures.";
+    return;
+  }
+  const picks = names.slice(0, 16);
+  picks.forEach((name) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = name;
+    b.addEventListener("click", () => draw(name));
+    box.append(b);
+  });
+}
+
+loadNames();
+</script>
+</body>
+</html>

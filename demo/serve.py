@@ -8,7 +8,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PAGE = Path(__file__).resolve().parent / "index.html"
 PORT = 8787
 
 SCHEMA = {
@@ -57,16 +56,17 @@ def parse_call(text):
 
 
 class Model:
-    def __init__(self):
+    """One Swift process, loaded once, answering prompts on stdin."""
+
+    def __init__(self, command, ckpt, vocab, extra=()):
         binary = ROOT / "build" / "gpt"
         if not binary.exists():
             raise SystemExit("build/gpt is missing. Run make demo from the repo.")
-        ckpt = ROOT / "build" / "tools.ckpt"
         if not ckpt.exists():
-            raise SystemExit("build/tools.ckpt is missing.")
+            raise SystemExit(f"{ckpt.name} is missing.")
         self.lock = threading.Lock()
         self.proc = subprocess.Popen(
-            [str(binary), "tools-repl", "--ckpt", str(ckpt), "--vocab", str(ROOT / "vocab" / "tools.txt"), "--temp", "0"],
+            [str(binary), command, "--ckpt", str(ckpt), "--vocab", str(vocab), *extra],
             cwd=str(ROOT),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -89,10 +89,83 @@ class Model:
         data = json.loads(line)
         if data.get("error") == "unknown":
             return {"error": "unknown", "unknown": data.get("unknown") or []}
+        return data
+
+
+class Controller:
+    """The tool model. Its continuation is a call, so parse it into fields."""
+
+    def __init__(self):
+        self.model = Model(
+            "tools-repl",
+            ROOT / "build" / "tools.ckpt",
+            ROOT / "vocab" / "tools.txt",
+            extra=("--temp", "0"),
+        )
+
+    def ask(self, prompt):
+        data = self.model.ask(prompt)
+        if data.get("error"):
+            return data
         return parse_call(data.get("text") or "")
 
 
-MODEL = Model()
+class Lens:
+    """The same weights, read out at every pass instead of sampled."""
+
+    def __init__(self):
+        self.model = Model(
+            "lens-repl",
+            ROOT / "build" / "tools.ckpt",
+            ROOT / "vocab" / "tools.txt",
+            extra=("--k", "5"),
+        )
+
+    def ask(self, prompt):
+        return self.model.ask(prompt)
+
+
+class Draw:
+    """One image model. Loaded on the first prompt, so a missing checkpoint
+    does not stop the controller page."""
+
+    def __init__(self, command, ckpt, vocab="vocab/images.txt"):
+        self.command = command
+        self.ckpt = ROOT / ckpt
+        self.vocab = ROOT / vocab
+        self.model = None
+
+    def ask(self, prompt):
+        if not self.ckpt.exists():
+            return {"error": "missing", "message": f"missing {self.ckpt.name}"}
+        if not self.vocab.exists():
+            return {"error": "missing", "message": f"missing {self.vocab.name}"}
+        if self.model is None:
+            self.model = Model(self.command, self.ckpt, self.vocab)
+        return self.model.ask(prompt)
+
+
+def icon_names():
+    path = ROOT / "vocab" / "photos.txt"
+    if not path.exists():
+        path = ROOT / "vocab" / "images.txt"
+    if not path.exists():
+        return []
+    lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    # pad, start, end, unknown, then 32 color ids, then the picture names
+    return lines[36:]
+
+
+MODEL = Controller()
+LENS = Lens()
+DRAW_AR = Draw("photos-ar-repl", "build/photos-ar.ckpt", vocab="vocab/photos-ar.txt")
+DRAW_DIT = Draw("images-dit-repl", "build/photos-dit.ckpt", vocab="vocab/photos.txt")
+
+PAGES = {
+    "/": Path(__file__).resolve().parent / "index.html",
+    "/lens": Path(__file__).resolve().parent / "lens.html",
+    "/draw": Path(__file__).resolve().parent / "draw.html",
+}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -108,10 +181,15 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if self.path.split("?", 1)[0] not in ("/", "/index.html"):
+        path = self.path.split("?", 1)[0]
+        if path == "/api/icons":
+            self.send_json(200, {"names": icon_names()})
+            return
+        page = PAGES.get(path)
+        if page is None:
             self.send_error(404)
             return
-        body = PAGE.read_bytes()
+        body = page.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -119,7 +197,14 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
-        if self.path != "/api/ask":
+        routes = {
+            "/api/ask": MODEL,
+            "/api/lens": LENS,
+            "/api/draw-ar": DRAW_AR,
+            "/api/draw-dit": DRAW_DIT,
+        }
+        model = routes.get(self.path)
+        if model is None:
             self.send_error(404)
             return
         length = int(self.headers.get("Content-Length", "0"))
@@ -129,7 +214,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(400, {"error": "bad json"})
             return
         try:
-            result = MODEL.ask(str(payload.get("prompt") or ""))
+            result = model.ask(str(payload.get("prompt") or ""))
         except Exception as exc:
             self.send_json(500, {"error": str(exc)})
             return
@@ -139,8 +224,11 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     # First call pays for the Metal compile. Later taps stay on the loaded weights.
     MODEL.ask("Could you set a 20 minute timer for pasta")
+    LENS.ask("Could you set a 20 minute timer for pasta")
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    print(f"demo http://127.0.0.1:{PORT}", flush=True)
+    print(f"demo      http://127.0.0.1:{PORT}/", flush=True)
+    print(f"logit lens http://127.0.0.1:{PORT}/lens", flush=True)
+    print(f"draw      http://127.0.0.1:{PORT}/draw", flush=True)
     server.serve_forever()
 
 

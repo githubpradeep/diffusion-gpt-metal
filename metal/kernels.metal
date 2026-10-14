@@ -38,8 +38,10 @@ struct BiasP { uint M, N, pad0, pad1; };
 struct AttnP {
     uint B, T, H, D;
     float scale;
-    uint pad0, pad1, pad2;
+    uint causal, pad1, pad2;
 };
+struct MseP { uint n, pad0; float invCount; uint pad1; };
+struct CondP { uint B, T, C, pad; };
 struct EmbP { uint B, T, C, qGroup; };
 struct EmbBwdP { uint B, T, C, V; };
 struct PosP { uint B, T, C, pad; };
@@ -436,7 +438,7 @@ kernel void acc_f(
 // ---- attention ----------------------------------------------------------------
 // q, k, v, av: [B, T, H, D] packed as ((b*T+t)*H+h)*D+d
 // scores, probs: [B, H, T, T] packed as ((b*H+h)*T+t)*T+s
-// causal: position t may attend to s <= t.
+// causal != 0: position t may attend to s <= t. Diffusion sets causal to 0.
 
 kernel void attn_scores(
     device const float* q [[buffer(0)]],
@@ -459,7 +461,7 @@ kernel void attn_scores(
         acc += qv * kv;
     }
     acc *= p.scale;
-    if (s > t) acc = -1.0e30f;
+    if (p.causal && s > t) acc = -1.0e30f;
     scores[idx] = acc;
 }
 
@@ -1055,4 +1057,49 @@ kernel void loss_fwd_masked(
         if (v == tgt) g -= 1.0f;
         drow[v] = g * p.invCount;
     }
+}
+
+// Mean squared error. err stores the squared residual; dpred is the gradient of the mean.
+kernel void mse_fwd(
+    device const float* pred [[buffer(0)]],
+    device const float* target [[buffer(1)]],
+    device float* err [[buffer(2)]],
+    device float* dpred [[buffer(3)]],
+    constant MseP& p [[buffer(4)]],
+    uint i [[thread_position_in_grid]]
+) {
+    if (i >= p.n) return;
+    float d = pred[i] - target[i];
+    err[i] = d * d;
+    dpred[i] = 2.0f * d * p.invCount;
+}
+
+// y[b, t, c] = x[b, t, c] + cond[b, c]
+kernel void add_cond(
+    device const float* x [[buffer(0)]],
+    device const float* cond [[buffer(1)]],
+    device float* y [[buffer(2)]],
+    constant CondP& p [[buffer(3)]],
+    uint i [[thread_position_in_grid]]
+) {
+    uint n = p.B * p.T * p.C;
+    if (i >= n) return;
+    uint c = i % p.C;
+    uint b = i / (p.C * p.T);
+    y[i] = x[i] + cond[b * p.C + c];
+}
+
+// dcond[b, c] = sum over t of dy[b, t, c]
+kernel void sum_cond(
+    device const float* dy [[buffer(0)]],
+    device float* dcond [[buffer(1)]],
+    constant CondP& p [[buffer(2)]],
+    uint2 gid [[thread_position_in_grid]]
+) {
+    uint c = gid.x;
+    uint b = gid.y;
+    if (c >= p.C || b >= p.B) return;
+    float s = 0.0f;
+    for (uint t = 0; t < p.T; ++t) s += dy[(b * p.T + t) * p.C + c];
+    dcond[b * p.C + c] = s;
 }

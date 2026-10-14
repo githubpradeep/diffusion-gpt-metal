@@ -2,7 +2,7 @@
 
 `transformer-metal` is a from-scratch decoder-only trainer. Swift owns the weights, the training loop, and sampling. The arithmetic runs as Metal compute kernels on the Mac GPU. Kernels in `metal/kernels.metal` are compiled at process start with Metal's runtime compiler.
 
-Three models share that runtime. The story model and the tool model are the same looped block at two widths.
+Three text models share that runtime. The story model and the tool model are the same looped block at two widths. The drawing runs are that block again: a causal painter and a diffusion transformer.
 
 | | Shakespeare | MacroStories | Tool calls |
 |---|---|---|---|
@@ -173,6 +173,80 @@ make demo
 
 `tools-sample` prints the decoded continuation. A call looks like `<call> set_timer minutes 10 label pasta`. A refusal is `<refuse>`. `make demo` loads the checkpoint once and serves the controller page at http://127.0.0.1:8787. `demo/controller.mp4` records that page for 24 seconds.
 
+## Logit lens
+
+The looped block keeps every intermediate state. `xs[0]` is the embedded token, and `xs[p + 1]` is the residual stream after pass `p`, already carrying the final RMSNorm because that norm is the last thing the loop does. Since the output head is tied to the embedding matrix, applying `wte` to any of those buffers gives a usable next-token prediction at that depth. `Macro.lensTopK` does exactly that and returns `[position][pass][top k]`.
+
+`xs[0]` is the exception. It is the raw embedding and has not been normalized, so the lens runs it through `nf` first; otherwise the first column would be comparing a normalized state against an unnormalized one. Reading it anyway is informative rather than broken: because the head is the embedding matrix, `wte @ embed(x)` peaks at `x`, so that column is an identity echo of the input. It is the baseline the later passes have to beat.
+
+Measured on `build/tools.ckpt`, prompt `Could you set a timer for 10 minutes for pasta`:
+
+| after | embedding | pass 1 | pass 2 | pass 3 | pass 4 |
+|---|---|---|---|---|---|
+| `timer` | `timer` 1.00 | `for` 0.08 | `for` 0.89 | `for` 0.98 | `for` 1.00 |
+| `minutes` | `minutes` 1.00 | `label` 0.10 | `?` 0.37 | `?` 0.94 | `?` 0.99 |
+| `pasta` | `pasta` 1.00 | `<\|end\|>` 0.50 | `?` 0.89 | `?` 0.92 | `?` 1.00 |
+
+The last row is the only one generation branches from, and it is not decided after one pass. The tool decision also settles early and then holds: after `a` the model is already on `timer` by pass 1, and the argument tokens keep sharpening through pass 4. Positions where the argument is genuinely unknown stay uncertain at every depth — after the second `for` the model guesses a timer label, reading `bread` 0.58 at pass 2 and `stretch` 0.57 at pass 3. The lens does not invent certainty that is not in the model.
+
+```bash
+make demo
+./build/gpt lens-repl --ckpt build/tools.ckpt --vocab vocab/tools.txt --k 5
+```
+
+`lens-repl` takes one prompt per line on stdin and writes one JSON line per prompt, holding the checkpoint open, which is the same protocol `tools-repl` uses. `demo/serve.py` keeps one of each resident and routes `/api/lens` and `/api/ask` to them. The page is `demo/lens.html`, served at `/lens`.
+
+## Drawings
+
+The painter and the diffusion model are both the looped block. One set of weights runs four times, and each pass reads the residual left by the pass before it. Each run stores its own checkpoint. The page at `/draw` shows the photograph pair. It keeps one process per checkpoint, the same resident-process pattern as `tools-repl`. A missing image checkpoint does not stop the controller page.
+
+### Twemoji icons
+
+Both icon runs use the same 128 Twemoji icons, resized to 24×24 on white. `scripts/make_pictures.py` builds one 32-color palette for the token run and keeps the continuous RGB for the diffusion run. Training includes every name. The names live in `vocab/images.txt` after the four special tokens and the 32 color ids.
+
+| | Autoregressive | Diffusion |
+|---|---|---|
+| Sequence | name, then 576 color tokens, then end | 36 patches of 4×4 RGB |
+| Attention | causal, the mask already in `attn_scores` | the same scores with the causal flag off |
+| Loss | next-token cross-entropy | mean squared error of the predicted clean patch |
+| Conditioning | the name is the first token | a learned name row and a sinusoidal timestep, added to every token |
+| Sample | one color at a time, raster order | 20 DDIM steps, from noise down to a clean estimate |
+| Parameters | 45,697 | 299,648 |
+| Checkpoint | `build/images-ar.ckpt` | `build/images-dit.ckpt` |
+
+`AttnP` already had a spare field inside its 32-byte layout. That field is the causal flag. It defaults to on, so Shakespeare, the stories, and the tool model are unchanged. The diffusion block is the story block otherwise: RMSNorm, RoPE, the value residual, SwiGLU, four shared passes, Muon on the matrices, AdamW on the name embedding and the norms. It is wider than the painter, embedding 128 and SwiGLU 512, because a 64-wide net blurred one animal into the next.
+
+The noise schedule is linear, 100 steps. Beta starts at `1e-4` and ends near `0.089`, which is the end point that leaves the last alpha-bar at about `0.01`. A 100-step copy of the 1000-step `0.02` endpoint would leave about a third of the signal, and a pure-noise start would not match training.
+
+The head predicts the clean patch rather than the noise. At the last timestep the icon is a small part of the residual, so a noise loss can fall while the recovered picture stays gray. Scoring the clean image makes a late step responsible for the picture. The sampler clamps that prediction to `[-1, 1]` and rebuilds the noise direction from it, which is the deterministic DDIM step.
+
+The loop frames use the same readout as the logit lens. For the painter, each pass's tied head is read at every position and the argmax color is painted. For the diffusion model, the clean-image head is read off the residual stream after each pass of the first noisy step.
+
+`make images-check` memorizes one training icon. The token loss has to drop by more than 1.5, the diffusion gradients have to match a central difference, and a sample of that icon has to land closer to the original than a flat gray image does.
+
+### Photographs
+
+Fourteen Wikimedia photographs are center-cropped to 128×128. `scripts/make_photos.py` writes `data/photos/rgb.bin` and `vocab/photos.txt`. The names sit after the same four special tokens and 32 unused color ids, so a name index matches the icon vocab. The diffusion word list and the painter word list are separate files: the painter's patch ids would otherwise shift every name.
+
+| | Autoregressive | Diffusion |
+|---|---|---|
+| Sequence | name, then 64 patch ids, then end | 64 patches of 16×16 RGB |
+| Attention | causal | the causal flag off |
+| Loss | next-token cross-entropy | mean squared error of the predicted clean patch |
+| Conditioning | the name is the first token | a learned name row and a sinusoidal timestep, added to every token |
+| Sample | 64 patch ids, filling the grid | 20 DDIM steps, from noise down to a clean estimate |
+| Width | embedding 64, SwiGLU 128 | embedding 192, SwiGLU 768 |
+| Parameters | 93,697 | 906,816 |
+| Checkpoint | `build/photos-ar.ckpt` (`TMAC`) | `build/photos-dit.ckpt` (`TDIT`) |
+
+`scripts/make_photo_tokens.py` builds the painter's sequence. Identical 16×16 patches share one codebook entry. The book is an exact match over these fourteen pictures, so a correct id sequence rebuilds the photograph. Patch ids start at 4. With 896 distinct patches the name tokens start at 900, and the vocabulary in `vocab/photos-ar.txt` has 914 rows. The sequence length is 66.
+
+The photograph diffusion run stores last alpha-bar `0.0001`. An end point of `0.01` still leaves a faint copy of the photo inside the noise, and the loss can fall while a pure-noise sample stays wrong. Half of each training batch draws its timestep from the noisiest fifth of the 100 levels. At sample time the initial noise is scaled by the square root of one minus that last alpha-bar.
+
+Fourteen names is a closed set. Both models reproduce a photograph they were trained on. The painter's finished sample matches it exactly. The diffusion sample is the same picture, a little soft. `demo/draw.mp4` records the page choosing house, then cat, then pizza.
+
 ## Checkpoints
 
-A Shakespeare checkpoint starts with the bytes `TGMT`, then the vocabulary bytes and every master weight in creation order. A looped checkpoint, used by both the story model and the tool model, starts with `TMAC`, version 1, then vocab size, block, loops, heads, key/value heads, embedding width, SwiGLU width, the value-mix coefficient, and the parameters in creation order: embedding, Q, K, V, output, gate, up, down, the five norms, and the unused exit gate. The files store fp32 master weights. The int4 or int8 copy is rebuilt when a Shakespeare checkpoint is loaded. The string table is not inside `TMAC`; the tool run reads `vocab/tools.txt` beside `build/tools.ckpt`.
+A Shakespeare checkpoint starts with the bytes `TGMT`, then the vocabulary bytes and every master weight in creation order. A looped checkpoint, used by the story model, the tool model, and the patch painter, starts with `TMAC`, version 1, then vocab size, block, loops, heads, key/value heads, embedding width, SwiGLU width, the value-mix coefficient, and the parameters in creation order: embedding, Q, K, V, output, gate, up, down, the five norms, and the unused exit gate. The files store fp32 master weights. The int4 or int8 copy is rebuilt when a Shakespeare checkpoint is loaded. The string table is not inside `TMAC`; the tool run reads `vocab/tools.txt` beside `build/tools.ckpt`.
+
+A diffusion checkpoint starts with `TDIT`. Version 2 then stores side, patch, name count, loops, heads, key/value heads, embedding width, SwiGLU width, frequency width, diffusion steps, the last alpha-bar as a float, the value-mix coefficient, and the parameters. Version 1 files load as last alpha-bar `0.01`.

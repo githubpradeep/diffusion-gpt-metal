@@ -81,6 +81,7 @@ final class Macro {
     private let cosTab, sinTab: Buf
     private let qPre, kPre, kRot, vPre, vMix, vFirst: Buf
     private let scores, dprobs, logits, dlogits, nll, lossSum, sumsq: Buf
+    private let lensNorm, lensRstd, lensLogits: Buf
     private let gx, t1, t2, dln, dq, dk, dv, dk1, dv1, dvPre, dFirst, dav, dsw, dg, du: Buf
     private let tokens: UBuf
     private let targets: UBuf
@@ -172,6 +173,12 @@ final class Macro {
         tokens = UBuf(device, count: maxM)
         targets = UBuf(device, count: maxM)
 
+        // Logit lens. `xs[0]` is the raw embedding, so it needs the final RMSNorm
+        // before the tied head, which the later passes already carry.
+        lensNorm = Buf(device, count: maxM * C)
+        lensRstd = Buf(device, count: maxM)
+        lensLogits = Buf(device, count: maxM * cfg.vocab)
+
         var rng = RNG(seed)
         let std: Float = 0.02
         for p in [wq, wk, wv, wo, wgate, wup, wdown] {
@@ -260,6 +267,37 @@ final class Macro {
         let V = cfg.vocab
         let row = (T - 1) * V
         return Array(UnsafeBufferPointer(start: logits.p.advanced(by: row), count: V))
+    }
+
+    /// Top-k predictions at every position, read out of the residual stream after
+    /// each pass. Column 0 is the embedded token before any block runs; column p+1
+    /// is the state after pass p. The tied output head is what does the reading.
+    func lensTopK(_ tokenIds: [UInt32], k: Int, ban: Set<Int>) -> [[[(Int, Float)]]] {
+        precondition(!tokenIds.isEmpty && tokenIds.count <= cfg.block)
+        B = 1
+        T = tokenIds.count
+        let M = B * T
+        let C = cfg.embd
+        let V = cfg.vocab
+        tokens.upload(tokenIds)
+        gpu.begin()
+        forward(withLoss: false, invCount: 1)
+        gpu.rmsFwd(x: xs[0], y: lensNorm, rstd: lensRstd, weight: nf.w,
+                   rows: M, cols: C, eps: cfg.eps)
+        gpu.end()
+
+        var cells = [[[(Int, Float)]]](repeating: [], count: M)
+        for p in 0...cfg.loops {
+            gpu.begin()
+            gemm(wte, p == 0 ? lensNorm : xs[p], lensLogits, M: M, N: V, K: C)
+            gpu.end()
+            let flat = lensLogits.download(M * V)
+            for row in 0..<M {
+                let start = row * V
+                cells[row].append(topKLogits(Array(flat[(start)..<(start + V)]), k: k, ban: ban))
+            }
+        }
+        return cells
     }
 
     func save(_ url: URL) throws {
@@ -491,7 +529,7 @@ func ropeTables(maxT: Int, dim: Int, theta: Float) -> (cos: [Float], sin: [Float
     return (cos, sin)
 }
 
-private func muonApply(_ p: Param, lr: Float, beta: Float, wd: Float) {
+func muonApply(_ p: Param, lr: Float, beta: Float, wd: Float) {
     let n = p.count
     let rows = p.rows
     let cols = p.cols
@@ -725,6 +763,21 @@ func evalToolCalls(model: Macro, stories: [[UInt32]], words: WordList) -> (hit: 
         }
     }
     return (hit, stories.count, misses)
+}
+
+/// Softmax, then the k most likely ids. Used by the logit lens so the page shows
+/// probabilities rather than raw scores.
+func topKLogits(_ row: [Float], k: Int, ban: Set<Int>) -> [(Int, Float)] {
+    var z = row
+    for i in ban where i >= 0 && i < z.count { z[i] = -1e30 }
+    var m = -Float.infinity
+    for v in z { m = max(m, v) }
+    var probs = z.map { exp($0 - m) }
+    let sum = probs.reduce(0, +)
+    let inv = sum > 0 ? 1 / sum : 0
+    for i in 0..<probs.count { probs[i] *= inv }
+    let order = (0..<probs.count).sorted { probs[$0] > probs[$1] }.prefix(max(k, 1))
+    return order.map { (Int($0), probs[$0]) }
 }
 
 func sampleNucleus(_ logits: [Float], temp: Float, topP: Float, rng: inout RNG, ban: Set<Int>) -> UInt32 {

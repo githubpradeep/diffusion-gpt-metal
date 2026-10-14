@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photographs</title>
+<style>
+  body { margin: 0; font-family: Georgia, serif; background: #e6dfd4; color: #1b1714; }
+  main { max-width: 980px; margin: 0 auto; padding: 36px 20px 64px; }
+  h1 { font-weight: 500; font-size: 42px; margin: 0 0 8px; }
+  p { margin: 0 0 22px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; }
+  figure { margin: 0; }
+  img { width: 100%; height: auto; border-radius: 8px; background: #111; }
+  figcaption { margin-top: 6px; font-family: system-ui, sans-serif; font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>The photographs.</h1>
+  <p>These are the 14 photographs the drawing page has learned.</p>
+  <div class="grid" id="grid"></div>
+</main>
+<script>
+const names = ["cat","dog","horse","bird","lion","elephant","pizza","burger","car","house","flower","mountain","beach","tree"];
+const grid = document.getElementById("grid");
+for (const name of names) {
+  const fig = document.createElement("figure");
+  const img = document.createElement("img");
+  img.src = name + ".png";
+  img.alt = name;
+  const cap = document.createElement("figcaption");
+  cap.textContent = name;
+  fig.append(img, cap);
+  grid.append(fig);
+}
+</script>
+</body>
+</html>

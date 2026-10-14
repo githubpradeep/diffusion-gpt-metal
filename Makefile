@@ -1,7 +1,7 @@
 SDK := $(shell xcrun --sdk macosx --show-sdk-path)
 SRC := $(wildcard src/*.swift)
 
-.PHONY: all check overfit train stories stories-check stories-hi tools demo clean
+.PHONY: all check overfit train stories stories-check stories-hi tools pictures photos photo-tokens images-check images-ar images-dit demo clean
 
 all: build/gpt
 
@@ -30,6 +30,24 @@ stories-hi: build/gpt
 
 tools: build/gpt
 	./build/gpt tools
+
+pictures:
+	python3 scripts/make_pictures.py
+
+photos:
+	python3 scripts/make_photos.py
+
+photo-tokens:
+	python3 scripts/make_photo_tokens.py
+
+images-check: build/gpt
+	./build/gpt images-check
+
+images-ar: build/gpt
+	./build/gpt images-ar
+
+images-dit: build/gpt
+	./build/gpt images-dit
 
 demo: build/gpt
 	python3 demo/serve.py

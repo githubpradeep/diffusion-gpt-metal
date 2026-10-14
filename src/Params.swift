@@ -56,9 +56,23 @@ struct AttnP {
     var H: UInt32
     var D: UInt32
     var scale: Float
-    var pad0: UInt32
+    var causal: UInt32
     var pad1: UInt32
     var pad2: UInt32
+}
+
+struct MseP {
+    var n: UInt32
+    var pad0: UInt32
+    var invCount: Float
+    var pad1: UInt32
+}
+
+struct CondP {
+    var B: UInt32
+    var T: UInt32
+    var C: UInt32
+    var pad: UInt32
 }
 
 struct EmbP {

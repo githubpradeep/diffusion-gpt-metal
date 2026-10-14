@@ -273,7 +273,18 @@ func printHelp() {
       gpt tools [--steps 4000] [--batch 32] [--block 64] [--embd 256] [--intermediate 758] [--heads 4] [--data data/tools/calls.bin] [--vocab vocab/tools.txt] [--ckpt build/tools.ckpt]
       gpt tools-sample [--ckpt build/tools.ckpt] [--vocab vocab/tools.txt] [--prompt "set a 5 minute timer for tea"] [--tokens 48] [--temp 0]
       gpt tools-repl [--ckpt build/tools.ckpt] [--vocab vocab/tools.txt] [--temp 0]
+      gpt lens-repl [--ckpt build/tools.ckpt] [--vocab vocab/tools.txt] [--k 5]
       gpt tools-eval [--ckpt build/tools.ckpt] [--data data/tools/calls.bin] [--vocab vocab/tools.txt]
+      gpt images-check
+      gpt images-ar [--steps 2000] [--batch 16] [--block 578] [--embd 64] [--intermediate 128] [--heads 4]
+      gpt images-ar-sample [--ckpt build/images-ar.ckpt] [--prompt cat] [--temp 0]
+      gpt images-ar-repl [--ckpt build/images-ar.ckpt]
+      gpt photos-ar [--steps 2000] [--batch 16] [--block 66]
+      gpt photos-ar-sample [--ckpt build/photos-ar.ckpt] [--prompt cat]
+      gpt photos-ar-repl [--ckpt build/photos-ar.ckpt] [--codebook data/photos/codebook.bin]
+      gpt images-dit [--steps 2000] [--batch 16] [--embd 64] [--diffusion-steps 100]
+      gpt images-dit-sample [--ckpt build/images-dit.ckpt] [--prompt cat] [--steps 20]
+      gpt images-dit-repl [--ckpt build/images-dit.ckpt]
 
     --bits 4, 8, or 32. 8-bit is the default. 32 keeps every GEMM in fp32.
     Weights are group-quantized (group 8) only for the forward GEMM. Gradients

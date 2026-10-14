@@ -76,6 +76,69 @@ make demo
 
 `make demo` serves http://127.0.0.1:8787 and keeps the checkpoint loaded. `demo/controller.mp4` is a 24-second recording of that page. Words outside `vocab/tools.txt` are rejected before the model runs. A colon is its own token, so a time comes back as `6: 45`.
 
+## Logit lens
+
+The controller is a looped block, so the same weights run four times before anything is emitted. `http://127.0.0.1:8787/lens` reads the tied output head off the residual stream after every pass and shows the whole ladder: which word the model expected at each depth, and how confident it was.
+
+The interesting column is the last one. After the final token of a request, confidence on the correct next word climbs across the passes. For `Could you set a timer for 10 minutes for pasta`, the readout after `pasta` goes `<|end|>` at 0.50, then `?` at 0.89, 0.92, and 1.00. The answer is not there after one pass. It is there by three.
+
+The `embedding` column is the readout before any block has run. Because the head is the embedding matrix, it hands the input straight back — a flat identity that every later column has to beat.
+
+```bash
+make demo
+./build/gpt lens-repl --ckpt build/tools.ckpt --vocab vocab/tools.txt --k 5
+```
+
+`lens-repl` speaks the same one-prompt-per-line protocol as `tools-repl`, so both models stay resident in one server.
+
+## Drawings
+
+The painter and the diffusion model are both the looped block from the story run. One set of weights runs four times. RMSNorm, RoPE, the value residual, and SwiGLU are the same pieces. The four small frames under each canvas are those four passes. Each run has its own checkpoint.
+
+You prompt with a single name. The page at http://127.0.0.1:8787/draw shows fourteen photographs. `demo/draw.mp4` records that page for 26 seconds: house, then cat, then pizza.
+
+### Photographs
+
+`make photos` downloads 14 Wikimedia Commons pictures and center-crops them to 128×128. The names are cat, dog, horse, bird, lion, elephant, pizza, burger, car, house, flower, mountain, beach, and tree. Credits are in `data/photos/credit.json`. The originals are in `demo/photos/`.
+
+The diffusion copy sees the whole photograph at once: 64 patches of 16×16. Attention is open, so every patch sees every other patch. A learned name row and a sinusoidal timestep are added onto every token. The head predicts the clean patch, and the loss is that prediction's mean squared error. Sampling is 20 deterministic DDIM steps. The block is wider than the painter (embedding 192, SwiGLU 768). The checkpoint is `build/photos-dit.ckpt`, **906,816** parameters. Training uses 100 linear noise levels and sets the last alpha-bar to `0.0001`, and half of each batch is drawn from the noisiest fifth of those levels, so a sample starts from noise. With fourteen pictures the weights memorize each name.
+
+The painter for the same photographs predicts patch ids. `make photo-tokens` gives every distinct 16×16 patch its own id, so the sequence is the name, 64 ids, and an end token. Attention stays causal. The checkpoint is `build/photos-ar.ckpt`, **93,697** parameters. A finished sample matches the photograph, because each id is a stored patch.
+
+```bash
+make photos
+make photo-tokens
+./build/gpt photos-ar
+./build/gpt images-dit --vocab vocab/photos.txt --rgb data/photos/rgb.bin \
+  --ckpt build/photos-dit.ckpt --patch 16 --embd 192 --intermediate 768 \
+  --batch 8 --steps 2500 --lr 0.006 --last-alpha 0.0001
+make demo
+```
+
+```bash
+./build/gpt photos-ar-sample --prompt cat
+./build/gpt images-dit-sample --ckpt build/photos-dit.ckpt --vocab vocab/photos.txt --prompt cat
+```
+
+Both sample commands print one JSON document: the frames, and the four loop snapshots.
+
+### Twemoji icons
+
+The same two runs also train on 128 Twemoji icons at 24×24. You prompt with a name such as `kite` or `heart`.
+
+The autoregressive run reads the icon in raster order. Each pixel is one of 32 shared colors, so a picture is 576 tokens after the name. Attention stays causal. The checkpoint is `build/images-ar.ckpt`, **45,697** parameters.
+
+The diffusion run uses 36 patches of 4×4, with the causal mask off, and predicts the clean patch. It is wider than that painter (embedding 128, SwiGLU 512). The checkpoint is `build/images-dit.ckpt`, **299,648** parameters. Training uses 100 linear noise levels, from beta `1e-4` up to about `0.089`, which leaves the last alpha-bar near `0.01`. Both icon runs train on all 128 names.
+
+```bash
+make pictures
+make images-check
+make images-ar
+make images-dit
+```
+
+`make pictures` downloads the icons. The artwork is [Twemoji](https://github.com/jdecked/twemoji), CC-BY 4.0, copyright 2020 Twitter, Inc and other contributors. `images-check` memorizes one icon with each model.
+
 ## Layout
 
 - `metal/kernels.metal` — quantize, grouped int4/int8 GEMM, LayerNorm, RMSNorm, RoPE, GELU, SwiGLU, causal attention, embeddings, loss, AdamW
@@ -83,7 +146,12 @@ make demo
 - `src/Macro.swift` — the looped block, Muon, training, sampling, tool-call eval
 - `scripts/distill_tools.py` — fixed tool labels, then a teacher writes the sentence
 - `vocab/tools.txt` — the 987-word tool list
-- `demo/` — the controller page, `controller.mp4`, and the server that keeps `build/tools.ckpt` loaded
+- `demo/` — the controller page, the logit lens, the drawing page, `controller.mp4`, `draw.mp4`, and the server that keeps the checkpoints loaded
+- `scripts/make_pictures.py` — download 128 Twemoji icons and pack the two training files
+- `scripts/make_photos.py` — download 14 Wikimedia photographs and pack the diffusion file
+- `scripts/make_photo_tokens.py` — turn those photographs into 64 patch ids
+- `vocab/photos.txt`, `vocab/photos-ar.txt`, `vocab/images.txt` — picture names for the two drawing runs
+- `src/DiT.swift` — the diffusion transformer: the looped block with full attention, clean-image loss, and a 20-step sampler
 - `src/MacroData.swift` — the teacher-story corpus used by `make stories`
 - `src/MacroVocab.swift` — the 378-word list and prompt encoding
 - `scripts/distill_stories.py` — sample `raincandy-u/MacroStories` into `data/macro-distill.bin`

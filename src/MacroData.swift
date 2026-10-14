@@ -615,7 +615,7 @@ struct MacroSplit {
     var val: [[UInt32]]
 }
 
-func loadMacroCorpus(_ path: String) -> MacroSplit {
+func loadMacroCorpus(_ path: String, holdout: Int = 20) -> MacroSplit {
     guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)), data.count >= 12 else {
         fputs("missing story corpus \(path)\n", stderr)
         fputs("sample the teacher with: .venv/bin/python scripts/distill_stories.py\n", stderr)
@@ -647,7 +647,8 @@ func loadMacroCorpus(_ path: String) -> MacroSplit {
         var story = [UInt32]()
         story.reserveCapacity(length)
         for _ in 0..<length { story.append(u32()) }
-        if index % 20 == 0 { val.append(story) } else { train.append(story) }
+        let stride = max(holdout, 1)
+        if index % stride == 0 { val.append(story) } else { train.append(story) }
     }
     if train.isEmpty { train = val }
     if val.isEmpty { val = train }
