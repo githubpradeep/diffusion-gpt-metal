@@ -1,8 +1,8 @@
 # Architecture
 
-`diffusion-gpt-metal` trains two image models on one looped transformer. Swift owns the weights, the training loop, and sampling. The arithmetic runs as Metal compute kernels on the Mac GPU. Kernels in `metal/kernels.metal` are compiled at process start with Metal's runtime compiler.
+`diffusion-gpt-metal` trains the image models on one looped transformer. Swift owns the weights, the training loop, and sampling. The arithmetic runs as Metal compute kernels on the Mac GPU. Kernels in `metal/kernels.metal` are compiled at process start with Metal's runtime compiler.
 
-The painter is causal next-token prediction over patch ids. The diffusion model is the same block with the causal mask off, conditioned on a name and a timestep, and it predicts the clean patch. Both runs are under [Drawings](#drawings).
+The painter is causal next-token prediction over patch ids. The diffusion model is the same block with the causal mask off, conditioned on a name and a timestep, and it predicts the clean patch. The next-concept model is that block again, predicting one scale of a residual palette at a time. The three runs are under [Drawings](#drawings).
 
 The loop was first trained as text. The story model and the tool model are that block at two widths. Shakespeare is a separate quantized GPT used to test the kernels.
 
@@ -202,7 +202,7 @@ make demo
 
 ## Drawings
 
-The painter and the diffusion model are both the looped block. One set of weights runs four times, and each pass reads the residual left by the pass before it. Each run stores its own checkpoint. The page at `/draw` shows the photograph pair. It keeps one process per checkpoint, the same resident-process pattern as `tools-repl`. A missing image checkpoint does not stop the controller page.
+The painter, the diffusion model, and the next-concept model are the looped block. One set of weights runs four times, and each pass reads the residual left by the pass before it. Each run stores its own checkpoint. The page at `/draw` shows the three photograph runs. It keeps one process per checkpoint, the same resident-process pattern as `tools-repl`. A missing image checkpoint does not stop the controller page.
 
 ### Twemoji icons
 
@@ -249,8 +249,32 @@ The photograph diffusion run stores last alpha-bar `0.0001`. An end point of `0.
 
 Fourteen names is a closed set. Both models reproduce a photograph they were trained on. The painter's finished sample matches it exactly. The diffusion sample is the same picture, a little soft. `demo/draw.mp4` records the page choosing house, then cat, then pizza.
 
+### Next-concept photographs
+
+Next-concept modeling generates the same photograph as a residual palette, coarse grid first. This is the image form of the text model in [Next-Concept Modeling](https://arxiv.org/abs/2610.14162): a hierarchy of discrete codes, then one parallel prediction per level. The text paper learns that hierarchy with a multiscale residual VQ-VAE. A photograph already lives on a grid, so the hierarchy here is a residual color palette. There is no separate encoder.
+
+The color scales on a 128×128 photograph are 1, 2, 4, 8, and 16 cells on a side. Each cell is one code in that level's book of 64 colors, painted flat across the cell. A prefix is already a picture: one color, then four blocks, then sixteen, and so on, down to 8×8 blocks. The last level is not another color book. It is the same 16×16 patches the sharp painter uses, one code per patch that actually appears in the photographs, and it overwrites each block with those pixels. A correct last code is the photograph.
+
+That residual is the nested objective for the color scales. Decoding the first k color levels is the picture at that scale, so an early level cannot leave its work to a later one. The text tokenizer needs nested dropout to get the same effect. The last level is the exception: it replaces the canvas with the stored patches. The generator never sees the photograph. It sees the picture painted so far, averaged down to the scale it is about to predict, plus the name, a learned level row, and a row embedding and a column embedding for the cell. The row and column are required: after the first color, every cell of the next grid holds that same color, and RoPE alone did not separate the four corners. Attention stays inside the scale. A separate forward per scale is the block-diagonal mask from the paper: codes in one scale are independent given the coarser picture, and they are all predicted in one pass.
+
+Training corrupts the codes that build that coarser picture. The rate starts at 0.3 on the single color and falls linearly to zero on the last grid. The labels stay clean. A wrong coarse code at sample time then looks like something the loss already trained through. The head is a cross-entropy over the level's book. Color cells share the loss by count. The exact patch grid weighs as much as all of those color cells together.
+
+The block is the diffusion block otherwise: RMSNorm, RoPE, the value residual, SwiGLU, four shared passes, the causal flag off, Muon on the matrices, AdamW on the name, the level row, and the norms. The color levels share one code head. The exact patches have their own head. The checkpoint is `build/photos-ncm.ckpt`, magic `TNCM`, **368,128** parameters at the default width. Version 2 stores the patch size and the exact book. Version 1 files still load. Sampling starts from a blank image and takes six steps. The frames are the picture after each scale. The four small frames are the four passes of the last scale.
+
+```bash
+make images-ncm-check
+./build/gpt images-ncm --vocab vocab/photos.txt --rgb data/photos/rgb.bin \
+  --ckpt build/photos-ncm.ckpt --finest 16 --codes 64 --patch 16 --embd 128 --intermediate 512 \
+  --batch 4 --steps 800 --lr 0.004 --corrupt 0.3 --detail 0
+./build/gpt images-ncm-sample --ckpt build/photos-ncm.ckpt --vocab vocab/photos.txt --prompt cat
+```
+
+`images-ncm-check` checks the pyramid, a central-difference gradient on the projection, the code head, the first norm, and the row table, then memorizes one photograph as color scales and again as exact 16×16 patches.
+
 ## Checkpoints
 
 A Shakespeare checkpoint starts with the bytes `TGMT`, then the vocabulary bytes and every master weight in creation order. A looped checkpoint, used by the story model, the tool model, and the patch painter, starts with `TMAC`, version 1, then vocab size, block, loops, heads, key/value heads, embedding width, SwiGLU width, the value-mix coefficient, and the parameters in creation order: embedding, Q, K, V, output, gate, up, down, the five norms, and the unused exit gate. The files store fp32 master weights. The int4 or int8 copy is rebuilt when a Shakespeare checkpoint is loaded. The string table is not inside `TMAC`; the tool run reads `vocab/tools.txt` beside `build/tools.ckpt`.
 
 A diffusion checkpoint starts with `TDIT`. Version 2 then stores side, patch, name count, loops, heads, key/value heads, embedding width, SwiGLU width, frequency width, diffusion steps, the last alpha-bar as a float, the value-mix coefficient, and the parameters. Version 1 files load as last alpha-bar `0.01`.
+
+A next-concept checkpoint starts with `TNCM`. Version 1 stores side, finest scale, name count, codebook size, loops, heads, key/value heads, embedding width, SwiGLU width, level count, the value-mix coefficient, the coarsest corruption rate, the scale list, every palette, then the generator parameters: projection, code head, name table, level table, row table, column table, Q, K, V, output, gate, up, down, and the five norms. Version 2 writes the patch size and the patch count after the level count. Its last palette is the exact 16×16 book, and the patch head follows the color head. Version 1 files still load.

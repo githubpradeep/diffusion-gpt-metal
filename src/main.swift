@@ -373,6 +373,46 @@ case "images-dit-repl":
         fputs("images-dit-repl failed: \(error)\n", stderr)
         exit(1)
     }
+case "images-ncm-check":
+    let gpu = GPU()
+    do {
+        let ok = try runNCMChecks(gpu: gpu)
+        if !ok { exit(1) }
+    } catch {
+        fputs("images-ncm-check failed: \(error)\n", stderr)
+        exit(1)
+    }
+case "images-ncm":
+    let gpu = GPU()
+    do {
+        try trainNCM(gpu: gpu, args: args)
+    } catch {
+        fputs("images-ncm failed: \(error)\n", stderr)
+        exit(1)
+    }
+case "images-ncm-sample":
+    let gpu = GPU()
+    do {
+        let words = try WordList.load(args.str("vocab", NCMFiles.vocab))
+        let model = try NCM.load(gpu: gpu, url: URL(fileURLWithPath: args.str("ckpt", NCMFiles.ckpt)),
+                                 batch: 1, seed: 1)
+        let seed = args.flags["seed"].flatMap(UInt64.init) ?? macroSampleSeed()
+        var rng = RNG(seed)
+        fputs("seed \(seed)\n", stderr)
+        emitImage(drawImageNCM(model: model, words: words, name: args.str("prompt", "cat"),
+                               temp: args.float("temp", 0), rng: &rng))
+    } catch {
+        fputs("images-ncm-sample failed: \(error)\n", stderr)
+        exit(1)
+    }
+case "images-ncm-repl":
+    let gpu = GPU()
+    do {
+        try runImageNCMRepl(gpu: gpu, args: args)
+    } catch {
+        fputs("images-ncm-repl failed: \(error)\n", stderr)
+        exit(1)
+    }
 case "sample":
     let gpu = GPU()
     let ckpt = args.str("ckpt", "build/model.ckpt")

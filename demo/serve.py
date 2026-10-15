@@ -160,6 +160,7 @@ MODEL = Controller()
 LENS = Lens()
 DRAW_AR = Draw("photos-ar-repl", "build/photos-ar.ckpt", vocab="vocab/photos-ar.txt")
 DRAW_DIT = Draw("images-dit-repl", "build/photos-dit.ckpt", vocab="vocab/photos.txt")
+DRAW_NCM = Draw("images-ncm-repl", "build/photos-ncm.ckpt", vocab="vocab/photos.txt")
 
 PAGES = {
     "/": Path(__file__).resolve().parent / "index.html",
@@ -202,6 +203,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/lens": LENS,
             "/api/draw-ar": DRAW_AR,
             "/api/draw-dit": DRAW_DIT,
+            "/api/draw-ncm": DRAW_NCM,
         }
         model = routes.get(self.path)
         if model is None:

@@ -2,7 +2,7 @@
 
 A looped transformer that draws, trained from scratch on a Mac GPU. The arithmetic is Metal compute kernels.
 
-Two runs share that block. The autoregressive painter fills a photograph one 16×16 patch at a time. The diffusion transformer starts from noise and predicts the clean photograph. One set of weights runs four times in each model. RMSNorm, RoPE, the value residual, and SwiGLU are the same pieces. Each run has its own checkpoint. The four small frames under each canvas are those four passes.
+Three runs share that block. The autoregressive painter fills a photograph one 16×16 patch at a time. The diffusion transformer starts from noise and predicts the clean photograph. Next-concept modeling paints a residual palette, coarse grid first, every cell in a grid at once. One set of weights runs four times in each model. RMSNorm, RoPE, the value residual, and SwiGLU are the same pieces. Each run has its own checkpoint. The four small frames under each canvas are those four passes.
 
 You prompt with a single name. The page at http://127.0.0.1:8787/draw shows fourteen photographs. `demo/draw.mp4` records that page for 26 seconds: house, then cat, then pizza.
 
@@ -31,7 +31,17 @@ make demo
 ./build/gpt images-dit-sample --ckpt build/photos-dit.ckpt --vocab vocab/photos.txt --prompt cat
 ```
 
-Both sample commands print one JSON document: the frames, and the four loop snapshots. Xcode or the Command Line Tools are enough. Kernels in `metal/kernels.metal` are compiled on first launch.
+Next-concept modeling is the third photograph run. A frozen palette paints five color grids, from one cell up to 16 cells on a side, and then one grid of the same 16×16 pixel patches the sharp painter uses. The transformer predicts one grid at a time. Early grids are short. The input at a grid is the picture the coarser grids already painted, plus the name and that cell's row and column. Training swaps out some of those coarser codes, more at the start than at the end, so a mistake at sample time does not pile up. Six forward passes finish the photograph. The last pass overwrites each block with the real patch, so a correct code matches the sharp column. The checkpoint is `build/photos-ncm.ckpt`, **368,128** parameters.
+
+```bash
+make images-ncm-check
+./build/gpt images-ncm --vocab vocab/photos.txt --rgb data/photos/rgb.bin \
+  --ckpt build/photos-ncm.ckpt --finest 16 --codes 64 --patch 16 --embd 128 --intermediate 512 \
+  --batch 4 --steps 800 --lr 0.004 --corrupt 0.3 --detail 0
+./build/gpt images-ncm-sample --ckpt build/photos-ncm.ckpt --vocab vocab/photos.txt --prompt cat
+```
+
+The sample commands print one JSON document: the frames, and the four loop snapshots. Xcode or the Command Line Tools are enough. Kernels in `metal/kernels.metal` are compiled on first launch.
 
 ## Twemoji icons
 
@@ -66,6 +76,7 @@ make demo
 ## Layout
 
 - `src/DiT.swift` — the diffusion transformer: the looped block with full attention, clean-image loss, and a 20-step sampler
+- `src/NCM.swift` — next-concept modeling: color grids, then one parallel prediction of the painter's patches
 - `src/Pictures.swift` — icon and photograph loading, the patch painter, sampling
 - `src/Macro.swift` — the looped block, Muon, training, sampling
 - `metal/kernels.metal` — quantize, grouped int4/int8 GEMM, LayerNorm, RMSNorm, RoPE, GELU, SwiGLU, attention, embeddings, loss, AdamW
