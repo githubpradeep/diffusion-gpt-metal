@@ -4,7 +4,7 @@ A looped transformer that draws, trained from scratch on a Mac GPU. The arithmet
 
 Three runs share that block. The autoregressive painter fills a photograph one 16×16 patch at a time. The diffusion transformer starts from noise and predicts the clean photograph. Next-concept modeling paints a residual palette, coarse grid first, every cell in a grid at once. One set of weights runs four times in each model. RMSNorm, RoPE, the value residual, and SwiGLU are the same pieces. Each run has its own checkpoint. The four small frames under each canvas are those four passes.
 
-You prompt with a single name. The page at http://127.0.0.1:8787/draw shows fourteen photographs. `demo/draw.mp4` records that page for 26 seconds: house, then cat, then pizza.
+You prompt with a single name. The page at http://127.0.0.1:8787/draw shows fourteen photographs. `demo/draw.mp4` records that page for 24 seconds: house, then cat, then pizza.
 
 The block diagram and the noise schedule are in [docs/architecture.md](docs/architecture.md).
 
