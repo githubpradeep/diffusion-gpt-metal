@@ -58,6 +58,7 @@ async function show(name) {
   await button.click();
   await page.locator("#ar-status").getByText(name + " · 65 frames").waitFor({ timeout: 120000 });
   await page.locator("#dit-status").getByText(name + " · 20 frames").waitFor({ timeout: 120000 });
+  await page.locator("#flow-status").getByText(name + " · 20 frames").waitFor({ timeout: 120000 });
   await page.locator("#ncm-status").getByText(name + " · 6 frames").waitFor({ timeout: 120000 });
   // 65 patch frames at 70ms, plus a beat on the finished picture.
   // The coarse-to-fine run is six frames at 280ms, so it finishes inside this hold.

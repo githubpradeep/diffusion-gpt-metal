@@ -2,7 +2,7 @@
 
 A looped transformer that draws, trained from scratch on a Mac GPU. The arithmetic is Metal compute kernels.
 
-Three runs share that block. The autoregressive painter fills a photograph one 16×16 patch at a time. The diffusion transformer starts from noise and predicts the clean photograph. Next-concept modeling paints a residual palette, coarse grid first, every cell in a grid at once. One set of weights runs four times in each model. RMSNorm, RoPE, the value residual, and SwiGLU are the same pieces. Each run has its own checkpoint. The four small frames under each canvas are those four passes.
+Four runs share that block. The autoregressive painter fills a photograph one 16×16 patch at a time. The diffusion transformer starts from noise and predicts the clean photograph. Flow matching walks a straight line from that noise to the photograph. Next-concept modeling paints a residual palette, coarse grid first, every cell in a grid at once. One set of weights runs four times in each model. RMSNorm, RoPE, the value residual, and SwiGLU are the same pieces. Each run has its own checkpoint. The four small frames under each canvas are those four passes.
 
 You prompt with a single name. The page at http://127.0.0.1:8787/draw shows fourteen photographs. `demo/draw.mp4` records that page for 24 seconds: house, then cat, then pizza.
 
@@ -31,7 +31,17 @@ make demo
 ./build/gpt images-dit-sample --ckpt build/photos-dit.ckpt --vocab vocab/photos.txt --prompt cat
 ```
 
-Next-concept modeling is the third photograph run. A frozen palette paints five color grids, from one cell up to 16 cells on a side, and then one grid of the same 16×16 pixel patches the sharp painter uses. The transformer predicts one grid at a time. Early grids are short. The input at a grid is the picture the coarser grids already painted, plus the name and that cell's row and column. Training swaps out some of those coarser codes, more at the start than at the end, so a mistake at sample time does not pile up. Six forward passes finish the photograph. The last pass overwrites each block with the real patch, so a correct code matches the sharp column. The checkpoint is `build/photos-ncm.ckpt`, **368,128** parameters.
+Flow matching is the same width as the diffusion run and sees the same 64 patches. At time t the input is `(1 - t)` times noise plus `t` times the photograph. The head predicts the photograph, and the loss is that prediction's mean squared error. Each Euler step walks toward the prediction along the straight line. Sampling takes 20 steps from t = 0 to t = 1. The canvas shows the state after each step. Time follows a curriculum. The first 40% of steps draw t from a logit-normal biased toward noise, which is the schedule that reached its best sample in about two thirds of the usual steps. The rest of training draws t uniformly, so the ends of the path are trained too. The checkpoint is `build/photos-flow.ckpt`, **906,816** parameters.
+
+```bash
+make images-flow-check
+./build/gpt images-flow --vocab vocab/photos.txt --rgb data/photos/rgb.bin \
+  --ckpt build/photos-flow.ckpt --patch 16 --embd 192 --intermediate 768 \
+  --batch 8 --steps 2500 --lr 0.006
+./build/gpt images-flow-sample --ckpt build/photos-flow.ckpt --vocab vocab/photos.txt --prompt cat
+```
+
+Next-concept modeling is the fourth photograph run. A frozen palette paints five color grids, from one cell up to 16 cells on a side, and then one grid of the same 16×16 pixel patches the sharp painter uses. The transformer predicts one grid at a time. Early grids are short. The input at a grid is the picture the coarser grids already painted, plus the name and that cell's row and column. Training swaps out some of those coarser codes, more at the start than at the end, so a mistake at sample time does not pile up. Six forward passes finish the photograph. The last pass overwrites each block with the real patch, so a correct code matches the sharp column. The checkpoint is `build/photos-ncm.ckpt`, **368,128** parameters.
 
 ```bash
 make images-ncm-check
@@ -76,6 +86,7 @@ make demo
 ## Layout
 
 - `src/DiT.swift` — the diffusion transformer: the looped block with full attention, clean-image loss, and a 20-step sampler
+- `src/Flow.swift` — flow matching: the same block, a straight path from noise to the photograph, a clean-image head, and 20 Euler steps
 - `src/NCM.swift` — next-concept modeling: color grids, then one parallel prediction of the painter's patches
 - `src/Pictures.swift` — icon and photograph loading, the patch painter, sampling
 - `src/Macro.swift` — the looped block, Muon, training, sampling

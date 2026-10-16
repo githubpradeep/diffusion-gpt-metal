@@ -259,7 +259,7 @@ struct Args {
 
 func printHelp() {
     print("""
-    diffusion-gpt-metal — a looped transformer that draws: patches, diffusion, and next-concept scales
+    diffusion-gpt-metal — a looped transformer that draws: patches, diffusion, flow matching, and next-concept scales
 
     usage:
       gpt check
@@ -285,6 +285,10 @@ func printHelp() {
       gpt images-dit [--steps 2000] [--batch 16] [--embd 64] [--diffusion-steps 100]
       gpt images-dit-sample [--ckpt build/images-dit.ckpt] [--prompt cat] [--steps 20]
       gpt images-dit-repl [--ckpt build/images-dit.ckpt]
+      gpt images-flow-check
+      gpt images-flow [--steps 2500] [--batch 8] [--embd 192] [--intermediate 768] [--resume build/photos-flow.ckpt]
+      gpt images-flow-sample [--ckpt build/photos-flow.ckpt] [--vocab vocab/photos.txt] [--prompt cat] [--steps 20]
+      gpt images-flow-repl [--ckpt build/photos-flow.ckpt] [--vocab vocab/photos.txt]
       gpt images-ncm-check
       gpt images-ncm [--steps 800] [--batch 4] [--finest 16] [--codes 64] [--patch 16] [--embd 128] [--corrupt 0.3]
       gpt images-ncm-sample [--ckpt build/photos-ncm.ckpt] [--vocab vocab/photos.txt] [--prompt cat]

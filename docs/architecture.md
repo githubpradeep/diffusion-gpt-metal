@@ -2,7 +2,7 @@
 
 `diffusion-gpt-metal` trains the image models on one looped transformer. Swift owns the weights, the training loop, and sampling. The arithmetic runs as Metal compute kernels on the Mac GPU. Kernels in `metal/kernels.metal` are compiled at process start with Metal's runtime compiler.
 
-The painter is causal next-token prediction over patch ids. The diffusion model is the same block with the causal mask off, conditioned on a name and a timestep, and it predicts the clean patch. The next-concept model is that block again, predicting one scale of a residual palette at a time. The three runs are under [Drawings](#drawings).
+The painter is causal next-token prediction over patch ids. The diffusion model is the same block with the causal mask off, conditioned on a name and a timestep, and it predicts the clean patch. Flow matching is that block again, predicting the photograph and walking a straight line from noise to that prediction. The next-concept model predicts one scale of a residual palette at a time. The four runs are under [Drawings](#drawings).
 
 The loop was first trained as text. The story model and the tool model are that block at two widths. Shakespeare is a separate quantized GPT used to test the kernels.
 
@@ -202,7 +202,7 @@ make demo
 
 ## Drawings
 
-The painter, the diffusion model, and the next-concept model are the looped block. One set of weights runs four times, and each pass reads the residual left by the pass before it. Each run stores its own checkpoint. The page at `/draw` shows the three photograph runs. It keeps one process per checkpoint, the same resident-process pattern as `tools-repl`. A missing image checkpoint does not stop the controller page.
+The painter, the diffusion model, the flow-matching model, and the next-concept model are the looped block. One set of weights runs four times, and each pass reads the residual left by the pass before it. Each run stores its own checkpoint. The page at `/draw` shows the four photograph runs. It keeps one process per checkpoint, the same resident-process pattern as `tools-repl`. A missing image checkpoint does not stop the controller page.
 
 ### Twemoji icons
 
@@ -247,7 +247,35 @@ Fourteen Wikimedia photographs are center-cropped to 128×128. `scripts/make_pho
 
 The photograph diffusion run stores last alpha-bar `0.0001`. An end point of `0.01` still leaves a faint copy of the photo inside the noise, and the loss can fall while a pure-noise sample stays wrong. Half of each training batch draws its timestep from the noisiest fifth of the 100 levels. At sample time the initial noise is scaled by the square root of one minus that last alpha-bar.
 
-Fourteen names is a closed set. Both models reproduce a photograph they were trained on. The painter's finished sample matches it exactly. The diffusion sample is the same picture, a little soft. `demo/draw.mp4` records the page choosing house, then cat, then pizza.
+Fourteen names is a closed set. The runs reproduce a photograph they were trained on. The painter's finished sample matches it exactly. The diffusion sample is the same picture, a little soft. `demo/draw.mp4` records the page choosing house, then cat, then pizza.
+
+### Flow matching
+
+Flow matching uses the diffusion block and the same 64 patches of 16×16. The path is the straight line from noise ε to the photograph x:
+
+```
+x_t = (1 - t) ε + t x
+```
+
+t runs from 0 to 1. The head predicts x. The loss is the mean squared error of that photograph. Predicting the velocity x − ε instead would ask the block to cancel the exact noise in each patch. A patch is 768 numbers and the block is 192 wide, so that noise does not fit. The Euler step rebuilds the straight-line velocity from the predicted photograph:
+
+```
+x ← x + (x_pred − x) / (steps remaining)
+```
+
+A learned name row and a sinusoidal embedding of `t * 1000` are added onto every token. Time is sampled with the curriculum from Sun, 2026. For the first 40% of steps, t is logit-normal with mean -0.8 and spread 1, which puts the mass toward noise. Their paper writes the opposite clock, so this is their μ = 0.8. That phase is what cut the steps to the best sample by about a third. The remaining steps draw t uniformly, because leaving out the ends of the path leaves the photograph soft.
+
+Sampling starts at pure noise and takes 20 Euler steps. The frames are the state after each step. The four small frames are the four passes of the first step, each one the photograph that pass predicted. The checkpoint is `build/photos-flow.ckpt`, magic `TFLO`, **906,816** parameters at the photograph width (embedding 192, SwiGLU 768).
+
+```bash
+make images-flow-check
+./build/gpt images-flow --vocab vocab/photos.txt --rgb data/photos/rgb.bin \
+  --ckpt build/photos-flow.ckpt --patch 16 --embd 192 --intermediate 768 \
+  --batch 8 --steps 2500 --lr 0.006
+./build/gpt images-flow-sample --ckpt build/photos-flow.ckpt --vocab vocab/photos.txt --prompt cat
+```
+
+`images-flow-check` checks a central-difference gradient on the projection, the image head, and the first norm, then memorizes one icon and reloads the checkpoint.
 
 ### Next-concept photographs
 
@@ -276,5 +304,7 @@ make images-ncm-check
 A Shakespeare checkpoint starts with the bytes `TGMT`, then the vocabulary bytes and every master weight in creation order. A looped checkpoint, used by the story model, the tool model, and the patch painter, starts with `TMAC`, version 1, then vocab size, block, loops, heads, key/value heads, embedding width, SwiGLU width, the value-mix coefficient, and the parameters in creation order: embedding, Q, K, V, output, gate, up, down, the five norms, and the unused exit gate. The files store fp32 master weights. The int4 or int8 copy is rebuilt when a Shakespeare checkpoint is loaded. The string table is not inside `TMAC`; the tool run reads `vocab/tools.txt` beside `build/tools.ckpt`.
 
 A diffusion checkpoint starts with `TDIT`. Version 2 then stores side, patch, name count, loops, heads, key/value heads, embedding width, SwiGLU width, frequency width, diffusion steps, the last alpha-bar as a float, the value-mix coefficient, and the parameters. Version 1 files load as last alpha-bar `0.01`.
+
+A flow checkpoint starts with `TFLO`. Version 1 stores side, patch, name count, loops, heads, key/value heads, embedding width, SwiGLU width, frequency width, the value-mix coefficient, and the parameters in the same order as the diffusion file.
 
 A next-concept checkpoint starts with `TNCM`. Version 1 stores side, finest scale, name count, codebook size, loops, heads, key/value heads, embedding width, SwiGLU width, level count, the value-mix coefficient, the coarsest corruption rate, the scale list, every palette, then the generator parameters: projection, code head, name table, level table, row table, column table, Q, K, V, output, gate, up, down, and the five norms. Version 2 writes the patch size and the patch count after the level count. Its last palette is the exact 16×16 book, and the patch head follows the color head. Version 1 files still load.

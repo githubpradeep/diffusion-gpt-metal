@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Three ways to draw</title>
+<title>Four ways to draw</title>
 <style>
   :root {
     --paper: #e6dfd4;
@@ -22,7 +22,7 @@
       radial-gradient(900px 480px at 15% -10%, #f3ecdf, transparent 60%),
       var(--paper);
   }
-  main { max-width: 1280px; margin: 0 auto; padding: 48px 28px 64px; }
+  main { max-width: 1500px; margin: 0 auto; padding: 48px 28px 64px; }
   .kicker {
     margin: 0 0 12px;
     font-family: ui-sans-serif, system-ui, sans-serif;
@@ -70,7 +70,7 @@
   .chips button.on { background: var(--ink); color: var(--paper); border-color: var(--ink); }
   .pair {
     display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-columns: 1fr 1fr 1fr 1fr;
     gap: 22px;
     margin-top: 18px;
   }
@@ -107,18 +107,22 @@
   @media (max-width: 1100px) {
     main { padding: 28px 16px 40px; }
     h1 { font-size: 44px; }
+    .pair { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 700px) {
     .pair { grid-template-columns: 1fr; }
   }
 </style>
 </head>
 <body>
 <main>
-  <p class="kicker">Same photograph, three orders</p>
+  <p class="kicker">Same photograph, four orders</p>
   <h1>A real picture.</h1>
-  <p class="lede">Pick a name. The first canvas fills the photograph one 16×16 patch at a time. The second clears it out of noise. The third starts from one color and adds a finer grid at each step. Under each, four small frames are what the four passes believed.</p>
+  <p class="lede">Pick a name. The first canvas fills the photograph one 16×16 patch at a time. The second clears it out of noise. The third walks a straight line from noise to the photograph. The fourth starts from one color and adds a finer grid at each step. Under each, four small frames are what the four passes believed.</p>
   <ul class="facts">
     <li id="ar-fact">Autoregressive painter</li>
     <li id="dit-fact">Diffusion transformer</li>
+    <li id="flow-fact">Flow matching</li>
     <li id="ncm-fact">Next-concept model</li>
     <li>Wikimedia Commons photographs, center-cropped to 128×128.</li>
   </ul>
@@ -138,6 +142,12 @@
       <div class="loops" id="dit-loops"></div>
     </article>
     <article>
+      <h2>Along the flow</h2>
+      <p class="status" id="flow-status">Pick a name.</p>
+      <canvas class="stage" id="flow-stage" width="128" height="128"></canvas>
+      <div class="loops" id="flow-loops"></div>
+    </article>
+    <article>
       <h2>Coarse to fine</h2>
       <p class="status" id="ncm-status">Pick a name.</p>
       <canvas class="stage" id="ncm-stage" width="128" height="128"></canvas>
@@ -146,7 +156,7 @@
   </div>
 </main>
 <script>
-const timers = { ar: 0, dit: 0, ncm: 0 };
+const timers = { ar: 0, dit: 0, flow: 0, ncm: 0 };
 
 function paint(canvas, rgb, side) {
   const ctx = canvas.getContext("2d");
@@ -198,6 +208,7 @@ async function draw(name) {
   const jobs = [
     ["ar", "/api/draw-ar", "ar-stage", "ar-loops", "ar-status", "ar-fact", "Painting "],
     ["dit", "/api/draw-dit", "dit-stage", "dit-loops", "dit-status", "dit-fact", "Clearing "],
+    ["flow", "/api/draw-flow", "flow-stage", "flow-loops", "flow-status", "flow-fact", "Flowing "],
     ["ncm", "/api/draw-ncm", "ncm-stage", "ncm-loops", "ncm-status", "ncm-fact", "Building "],
   ];
   await Promise.all(jobs.map(async ([key, url, stage, loops, status, fact, verb]) => {
@@ -214,7 +225,7 @@ async function draw(name) {
         return;
       }
       const side = data.width || 128;
-      const label = key === "ar" ? "Autoregressive" : key === "ncm" ? "Next-concept" : "Diffusion";
+      const label = key === "ar" ? "Autoregressive" : key === "ncm" ? "Next-concept" : key === "flow" ? "Flow matching" : "Diffusion";
       document.getElementById(fact).textContent = label + " · " + data.params.toLocaleString() + " parameters";
       document.getElementById(status).textContent = name + " · " + data.frames.length + " frames";
       play(key, document.getElementById(stage), data.frames, side);

@@ -373,6 +373,46 @@ case "images-dit-repl":
         fputs("images-dit-repl failed: \(error)\n", stderr)
         exit(1)
     }
+case "images-flow-check":
+    let gpu = GPU()
+    do {
+        let ok = try runFlowChecks(gpu: gpu)
+        if !ok { exit(1) }
+    } catch {
+        fputs("images-flow-check failed: \(error)\n", stderr)
+        exit(1)
+    }
+case "images-flow":
+    let gpu = GPU()
+    do {
+        try trainFlow(gpu: gpu, args: args)
+    } catch {
+        fputs("images-flow failed: \(error)\n", stderr)
+        exit(1)
+    }
+case "images-flow-sample":
+    let gpu = GPU()
+    do {
+        let words = try WordList.load(args.str("vocab", Pictures.vocabDefault))
+        let model = try Flow.load(gpu: gpu, url: URL(fileURLWithPath: args.str("ckpt", "build/images-flow.ckpt")),
+                                 batch: 1, seed: 1)
+        let seed = args.flags["seed"].flatMap(UInt64.init) ?? macroSampleSeed()
+        var rng = RNG(seed)
+        fputs("seed \(seed)\n", stderr)
+        emitImage(drawImageFlow(model: model, words: words, name: args.str("prompt", "cat"),
+                                steps: args.int("steps", 20), rng: &rng))
+    } catch {
+        fputs("images-flow-sample failed: \(error)\n", stderr)
+        exit(1)
+    }
+case "images-flow-repl":
+    let gpu = GPU()
+    do {
+        try runImageFlowRepl(gpu: gpu, args: args)
+    } catch {
+        fputs("images-flow-repl failed: \(error)\n", stderr)
+        exit(1)
+    }
 case "images-ncm-check":
     let gpu = GPU()
     do {
