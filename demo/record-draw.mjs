@@ -12,7 +12,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)));
 const rawDir = path.join(root, "video-raw");
 await mkdir(rawDir, { recursive: true });
 
-const width = 1440;
+const width = 1680;
 const height = 1380;
 const browser = await chromium.launch({ channel: "chrome", headless: true });
 const context = await browser.newContext({
